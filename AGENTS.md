@@ -79,6 +79,7 @@
 | 19 | **stage 埋点的真位置**是 `progress.ts:355`（`stageStart`）/ `:406`（`runEnd`）；`:73-95` 是 `STAGE_NAMES` 阶段名**闭集**，照着它去找埋点会看错整段。 |
 | 20 | **M1 的出口验收必须在服务器上跑，不是本机** —— 适配器与测试执行器都有平台分支（Windows vs Linux），本机绿不代表服务器绿。 |
 | 21 | 本仓库工作日志在 `.workbuddy/memory/YYYY-MM-DD.md`（append-only），长期结论在 `.workbuddy/memory/MEMORY.md`。**文档改动后同步更新**。 |
+| 22 | **换行恒定 LF，由 `.gitattributes` 强制**（不依赖机器的 `core.autocrlf`）。**不要删改这个声明** —— 文档锚点是「文件名 + 行号」，换行形态一旦随机器漂移，`github.ts:375-394` 这类锚点会集体失效。加文件后无需手工处理，git 按声明自动归一。 |
 
 ---
 

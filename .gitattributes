@@ -1,0 +1,21 @@
+# 换行归一：仓库内文本一律 LF，不依赖任何机器的 core.autocrlf
+#
+# 为什么要有这个文件：本仓库的文档用「文件名 + 行号」互相锚定
+# （如 github.ts:375-394、progress.ts:355），锚点成立的前提是行号稳定。
+# 换行策略若跟着开发机的全局配置走，同一份文件在不同机器（Windows / macOS /
+# 服务器 Linux）上入库形态会不一致，diff 与行号随之漂移，锚点集体失效。
+# 声明在仓库里，才能让这个约定与机器无关、可被 review。
+
+* text=auto eol=lf
+
+# 显式声明二进制，避免日后加入的素材被当文本做换行转换而损坏
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
