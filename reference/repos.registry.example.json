@@ -1,0 +1,24 @@
+{
+  "//": [
+    "仓库注册表(M5)。把 repoKey(owner/repo) 映射到**本机**接入信息。",
+    "复制本文件为 repos.registry.json 后填写(该文件名已在 .gitignore 中 —— 它含本机绝对路径)。",
+    "也可用环境变量 REPO_REGISTRY_PATH 指向别处的同结构文件。",
+    "",
+    "字段:",
+    "  localPath   必填。本机 clone 的绝对路径,必须是 git 工作树根(含 .git)。",
+    "  baseBranch  可选。该仓库的基线分支。省略则用 RepoTarget.baseBranch(缺省 main)。",
+    "              ⚠️ 两处都给出且不一致 → 显式报错,不会静默取其一。",
+    "",
+    "⚠️ 本文件**不含任何凭据**:token 仍只来自环境变量 GITHUB_TOKEN。",
+    "⚠️ 未知 repoKey 会显式报错,绝不回退到「当前仓库」—— 静默回退会在错误的仓库上开 PR。"
+  ],
+  "repos": {
+    "your-org/your-repo": {
+      "localPath": "/absolute/path/to/local/clone",
+      "baseBranch": "main"
+    },
+    "another-org/another-repo": {
+      "localPath": "/absolute/path/another-repo"
+    }
+  }
+}
