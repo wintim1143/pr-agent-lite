@@ -1,0 +1,29 @@
+# 依赖
+node_modules/
+
+# 环境变量（含凭据，绝不入库）
+.env
+.env.local
+.env.*.local
+
+# 构建产物
+dist/
+build/
+*.tsbuildinfo
+
+# 运行时数据 —— 实际路径由配置提供，这里是常见位置的兜底
+*.db
+*.db-journal
+*.db-wal
+logs/
+workdir/
+tmp/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本地工具目录（非项目内容）
+.upstream/

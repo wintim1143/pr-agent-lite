@@ -80,7 +80,9 @@ Mastra 的渗透点只有 **13 处调用点、散落在 9 个文件**；其中 4
 | `adapters/repo-registry.ts` | 191 | `localPath` 语义（见 §6.3）；`repoRoot()` 新增 fetch 挂钩 | `owner`/`repo`/`baseBranch` 的「逻辑标识 vs 本机事实」分层、**未知 repoKey 显式报错不降级**、空注册表不静默退化 |
 | `mastra/config.ts` | 138 | 删 `llmModelConfig = toMastraModelConfig(...)`（`:77`） | **`logLlmConfig()`（`:107-127`）要抢救** —— 它正是裁决 2 需要的「启动时打印实际生效 provider/model/baseURL」（M6-1 已实现） |
 
-### 2.3 ✅ 原样借鉴 —— 3,500 行 / 10 个文件
+### 2.3 ✅ 原样借鉴 —— **3,187 行 / 9 个文件**
+
+> 原为「3,500 行 / 10 个文件」，**减去 `adapters/feishu.ts`(313)** —— 飞书整块归 Hermes（裁决 A5），本项目零飞书代码。
 
 **实测 `@mastra` import 计数为 0。**
 
@@ -160,7 +162,7 @@ pr-agent-lite/
 │   ├── skills/              ← 借鉴 5 个 SKILL.md（merge-pr 去掉）
 │   ├── tools/               ← 🆕 MCP 工具面
 │   └── status-server.ts     ← 🆕 SSE 状态页
-├── test/                    ← 借鉴 12 文件 / 改造 2 文件（见 §7）
+├── test/                    ← 借鉴 13 个测试文件 + jest.setup.ts（206 声明 / 227 执行，见 §7）
 └── .env.example
 ```
 
@@ -205,16 +207,86 @@ pr-agent-lite/
 
 ---
 
-## 7. 测试的去向（16 文件 / 222 条声明）
+## 7. 测试的去向（逐条判完，2026-09-18 复核）
 
-| 去向 | 文件 | 条数 | 说明 |
+> **复核工具**：`audit-test-baseline.py`（只读）。`python audit-test-baseline.py` 出全表；
+> `--json` 存基线；`--diff test-baseline-pr-agent.json` 与基线对比。
+> 基线快照已存为 `test-baseline-pr-agent.json`（17 条记录）。**M1 搬完后用它核对条数** ——
+> 少搬一个文件也可能「测试全绿」。
+
+### 7.0 先纠正基线口径：声明数 ≠ 执行数
+
+上一轮说的「222 条」是**声明行数**，不是实际执行数。实测两套口径：
+
+| 口径 | 数值 | 说明 |
+|---|---|---|
+| 声明 | **222** | 源码里 `it(` / `it.each(` 的出现次数 |
+| **实际执行** | **243** | `it.each` 按数据组展开（9 处共多出 **21** 条：guard.test.ts 8 处 → +12，test-runner.test.ts 1 处 → +9） |
+
+> 之前「213 vs 222，差值 9 = `it.each` 处数」这个说法**不准确**：差值是处数没错，但正确结论是「222 声明 → 243 执行」，差值 21 条。**新项目的基线断言应当用「执行数」口径**，否则 CI 里跑出来的数字对不上。
+
+### 7.1 结论：只能删 16 条（约 6.5%），不是「大部分」
+
+**净结果：16 文件 → 13 个测试文件 + `jest.setup.ts`；222 → 206 条声明（243 → 227 条执行）。**
+
+| 去向 | 文件（条数=声明） | 条数 | 判断依据 |
 |---|---|---|---|
-| ✅ **留** | guard(34) repo-registry(33) llm-providers(20) log-store(19) test-runner(19) progress(17) github-adapter(15) repo-lock(13) state-db(12) m5-target-contract(7) | **189** | 全部零 Mastra |
-| 🔧 **改造** | `guard-hook.test.ts`(3) `dev-gate-contract.test.ts`(10) | **13** | 前者测 `makeGuardHook`（函数保留，仅调用方变）；后者测闸门契约（`passed` 合成会变，`runGate` 相关保留） |
-| 🔧 **部分留** | `entry-idempotency.test.ts`(16) | ~6 留 / ~10 删 | 「原子认领」几条**留**（改为测 dev_start 触发幂等）；「轮询窗口 / 游标只前进不后退」几条**随 `inbound-poll` 删除**。⚠️ 需重新过一遍逐条判 |
-| ❌ **删** | `storage.test.ts`(2) `api.test.ts`(1) `home.test.ts`(1) | **4** | storage 没了；后两个测 Midway controller |
+| ❌ **整删** | `storage.test.ts`(2) `api.test.ts`(1) `home.test.ts`(1) | **4** | 前者直接 `import { Mastra } from '@mastra/core'` 测 storage/suspend；后两个只 import `@midwayjs/*`，而 Midway 样板整块删 |
+| ✂️ **部分删** | `entry-idempotency.test.ts`(16 → 留 6) | **10** | 逐条拆见 7.2 |
+| 🔧 **需改逻辑** | `llm-providers.test.ts`(20 → 18) `guard-hook.test.ts`(3) `state-db.test.ts`(12) | **2 删 + 15 改** | 见 7.3 |
+| ✅ **零逻辑改动** | `guard`(34) `repo-registry`(33) `log-store`(19) `test-runner`(19) `progress`(17) `github-adapter`(15) `repo-lock`(13) `dev-gate-contract`(10) `m5-target-contract`(7) | **167** | 只改 import 路径，断言与用例标题全部照用 |
 
-> ⚠️ 上一轮核出的基线纠正仍然有效：**16 文件 / 222 条声明**（不是文档说的 213），差值 9 = `it.each` 处数（guard.test.ts 8 + test-runner.test.ts 1）。
+### 7.2 `entry-idempotency.test.ts` 逐条拆（16 条）
+
+| describe / 位置 | 条数 | 去向 | 理由 |
+|---|---|---|---|
+| `state-db`（:81）「库路径与 Mastra 同源：读 `MASTRA_DB_PATH`」 | 1 | ❌ 删 | 去掉 Mastra 后这个 env 名必须改（`state-db.ts:30` 实测读 `MASTRA_DB_PATH`），断言前提消失 |
+| `AC-2：原子认领`（:88）首次/并发/空 key/按来源过滤/runId 回填 | 5 | ✅ **全留** | `dedup-store.ts` 原样借鉴，原子性是 M3 验收第 5 条（同需求发两次只起一个 run）的直接支撑 |
+| `AC-3：游标只前进不后退`（:127） | 2 | ❌ 删 | 游标是**轮询**状态机，随 `inbound-poll` 删除 |
+| `AC-1：同一 messageId 连续投递 3 次只起 1 个 run`（:145） | 3 | ❌ 删 | 三条都调 `pollInboundOnce`（`inbound-poll.ts:27` 导入） |
+| `窗口选择与空消息`（:195） | 4 | ❌ 删 | 窗口回溯 / 空消息推游标 / 拉取失败，全是轮询概念 |
+| `fail-closed：去重存储不可写时拒绝起 run`（:253） | 1 | ✅ **留** | 「去重坏了不降级为继续跑」在新项目同样成立，且更靠前（触发方变成 Hermes） |
+
+### 7.3 需要改逻辑的三处
+
+| 文件 | 改动 | 备注 |
+|---|---|---|
+| `llm-providers.test.ts` | 删 `describe('toMastraModelConfig')` 2 条（`:129`/`:136`） | 该函数本身就是 §6 里唯一要删的导出；其余 18 条全留。⚠️ `:51` 那条标题里写着「与 Mastra 内部 `withoutTrailingSlash` 对齐」，**断言有效**（去尾部斜杠是通用需求），只改标题措辞 |
+| `guard-hook.test.ts`(3) | 断言形态可能要调 | 测 `makeGuardHook` 返回的 hook 对象；`runClaude()` 换裸 `query()` 后 hook 的**包装壳**变了，但 `makeGuardHook` 函数本体与 3 条断言逻辑（deny 行为）应原样能用 |
+| `state-db.test.ts`(12) | 其中涉及 `stateDbPath()` 的改 env 名 | `state-db.ts:30` = `process.env.MASTRA_DB_PATH ?? cwd()/mastra.db` → 新项目须改名（如 `LITE_STATE_DB`） |
+
+### 7.4 一条全局机械改动（14 个存活文件全中，不属「逻辑改动」）
+
+`src/mastra/` 与新 `test/mastra/` 的目录名在新项目里都不存在了，因此：
+
+- 每个文件的 `from '../../src/mastra/...'` 要批量重写
+- `jest.setup.ts` 的 `PR_AGENT_PROGRESS_FILE` env 前缀要改（**文件本身必须保留** —— 它防的是「单测往生产日志写事件导致判据污染」，`log-store` 是真相源这个前提下这条在新项目同样致命）
+- ⚠️ 这是**纯机械 sed 可做**的，但**必须逐个文件确认导出名没变**（`dev-workflow` 的 `runGate`/`ContextSchema`、`coding-agent` 的 `resolveProtectedBranchNames` 等被测试直接 import 的符号）
+
+### 7.5 为什么删不动 —— 值得记住的结构性事实
+
+被删的源码与测试完全不匹配，方向**和直觉相反**：
+
+| 分组 | 源码行数 | 对应测试条数 | 覆盖密度 |
+|---|---|---|---|
+| ❌ 删除的文件 | **1,337**（11 文件） | 约 **12**（`entry-idempotency` 的 10 + `storage` 的 2） | 极低 —— `insight-workflow`(307) / `insight-agent`(24) / `integrations/github-readonly`(209) / `dev-agent`(106) / `index`(56) **测试数为 0** |
+| ✅ 原样借鉴的文件 | **3,187**（9 文件） | 约 **189** | 高 —— `guard` 46 条守 311 行、`repo-registry` 33 条守 191 行 |
+
+⇒ **要删的代码恰恰是测试覆盖最薄的部分；测试资产几乎全压在要保留的代码上。** 这是「借鉴时白得一套回归网」的好消息，也是「删不动」的根本原因 —— 不是测试冗余，是**被砍的功能本来就没测过**。
+
+### 7.6 `repo-registry.test.ts`(33) 的一个判后修正
+
+33 条里有 **7 条**（`AC-6：不传 target 时行为与 M4 逐字一致` 4 条 + `旧 env 与注册表冲突检测` 3 条）表面是「向后兼容 pr-agent 的旧 env」，容易被判成可删。**逐条看过后结论是「留、但要改措辞」**：
+
+- `:257`「env 指的是**别的**仓库 → 不比对（否则多仓库下必然误报）」是**多仓库正确性**，不是兼容性
+- `:238`/`:246` env 与注册表**双源冲突报错**：新项目同样会有 env 配置，双源冲突检测仍然必要
+- `:294-:317` 的 4 条实质是「**单仓库模式不回归**」—— 新项目第一版只服务 1 个靶子仓库，单仓库是**主路径**，这 4 条反而更关键；只需把「与 M4 逐字一致」这个表述基准换掉
+
+> 另：`repo-registry` 的 `localPath` 语义**不必重写**（修正 §6 的旧判断）—— 「靶子仓库提前 clone 到服务器」意味着服务器上的固定 clone 目录就是 `localPath`，语义不变，只是取值变成服务器路径。AC-5「target 里不得含本机路径（快照要跨机器）」在新项目里约束更强，**必须保留**。
+
+### 7.7 净变化不是「只减」
+
+新增方向的缺口（M1 出口验收第 5 条已列）：**`usage` 形状收敛函数的三情形单测**（有 usage / 缺字段 / 无 usage）—— 这是唯一一处「去掉 Mastra 后必须补测」的地方，因为失败形态是静默的。
 
 ---
 
@@ -319,7 +391,7 @@ coding-agent 返回 Mastra FullOutput
 ## 附录 A：pr-agent 代码锚点速查（**已修正版**）
 
 > **用途**：动手搬代码时定位用。
-> ⚠️ **本表已修正原 `迁移方案与决策记录.md` 附录里 3 处失实锚点**（核对过程见 §8）—— **照旧表去读会看错整段代码**。
+> ⚠️ **本表已修正原 `迁移方案与决策记录.md` 附录里 3 处失实锚点**（该文件已于 2026-09-18 删除；核对过程见 §8）—— **照旧表去读会看错整段代码**。
 
 | 用途 | 文件:行 | 状态 |
 |---|---|---|
@@ -343,7 +415,7 @@ coding-agent 返回 Mastra FullOutput
 
 ## 附录 B：证据来源与置信（关键结论）
 
-> **来源**：原 `迁移方案与决策记录.md` §9，已更新 —— `ClaudeSDKAgent` 那一行由「低，待核实」升级为「高，已实读源码」。
+> **来源**：原 `迁移方案与决策记录.md` §9（**该文件已于 2026-09-18 删除**），本表已更新 —— `ClaudeSDKAgent` 那一行由「低，待核实」升级为「高，已实读源码」。
 
 | 结论 | 来源 | 置信 |
 |---|---|---|
