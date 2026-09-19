@@ -26,7 +26,8 @@
     "test": "jest",
     "cov": "jest --coverage",
     "start": "node dist/index.js",
-    "mcp": "node dist/mcp-server.js"
+    "mcp": "node dist/mcp-server.js",
+    "status": "node dist/status-page.js"
   },
   "license": "MIT"
 }

@@ -529,3 +529,106 @@ export function costByRepo(records: LogRecord[]): CostRow[] {
   }
   return [...rows.values()].sort((a, b) => b.totalTokens - a.totalTokens || b.llmCalls - a.llmCalls);
 }
+
+/**
+ * 一个 run 的**摘要**（「上次跑得怎么样」要回答的最小集合）。
+ *
+ * 所有字段都直接来自日志事件，**不做任何推断**：
+ * 取不到就是 `null`，不填默认值 —— 「没有记录」与「记录说它是 0」必须能分辨。
+ */
+export interface RunSummary {
+  runId: string;
+  /** `run:start` 的 ts；没落过该事件则为 null（历史遗留 / 记录已轮转出窗口） */
+  startedAt: string | null;
+  /** `run:end` 的 ts；未结束为 null */
+  endedAt: string | null;
+  /** `run:end` 的 status（ok / failed / skipped …）；**未结束为 null —— 不等于成功** */
+  status: string | null;
+  /** 最后一条事件的时间（用于「还在跑吗」） */
+  lastEventAt: string | null;
+  /** 最后一个 `step:start` 的 stage（跑到哪一步了） */
+  lastStage: string | null;
+  stepsDone: number;
+  stepsFailed: number;
+  /** 非心跳的 `llm:done` 数 */
+  llmCalls: number;
+  /** `repo:target` 落下的 repoKey；单仓库模式下为 null */
+  repoKey: string | null;
+  /** 拿不到 usage 的调用数 —— 报表必须带上它，否则会被读成「花了 0」 */
+  unknownUsage: number;
+  totalTokens: number;
+}
+
+/**
+ * 从记录流里重建 run 列表（**日志是唯一真相源**，不另存状态）。
+ *
+ * ## 为什么按「出现过 runId 的事件」分组，而不是只认 `run:start`
+ *
+ * `run:start` 是正常路径上的第一条事件，但历史遗留段（runId 覆盖率为 0 的那批）与
+ * 轮转边界都可能让它缺席。只认 `run:start` 会把「有记录但看不到开头」的 run 整段藏掉 ——
+ * 而它恰恰是最需要被看见的那种。所以：**只要事件带了这个 runId，这个 run 就存在**，
+ * 只是 `startedAt` 会是 null（并因此显式区别于「有起点」的 run）。
+ *
+ * @param limit 最多返回多少个 run（按最后一条事件时间倒序，最近的在前）
+ */
+export function listRuns(records: LogRecord[], limit = 20): RunSummary[] {
+  const runs = new Map<string, RunSummary>();
+  for (const r of records) {
+    if (typeof r.runId !== 'string' || !r.runId) continue;
+    let s = runs.get(r.runId);
+    if (!s) {
+      s = {
+        runId: r.runId,
+        startedAt: null,
+        endedAt: null,
+        status: null,
+        lastEventAt: null,
+        lastStage: null,
+        stepsDone: 0,
+        stepsFailed: 0,
+        llmCalls: 0,
+        repoKey: null,
+        unknownUsage: 0,
+        totalTokens: 0,
+      };
+      runs.set(r.runId, s);
+    }
+    // 记录流本身已按时间顺序（见文件头的跨轮转拼接契约），因此「后写覆盖」即为最新值。
+    s.lastEventAt = r.ts;
+    if (r.stage) s.lastStage = String(r.stage);
+
+    switch (r.event) {
+      case 'run:start':
+        s.startedAt ??= r.ts;
+        break;
+      case 'run:end':
+        // 一个 run 可能有且仅有一条 run:end（AC-8），重复出现时以最后一条为准
+        s.endedAt = r.ts;
+        s.status = typeof r.status === 'string' ? r.status : null;
+        break;
+      case 'repo:target':
+        if (typeof r.repoKey === 'string' && r.repoKey) s.repoKey = r.repoKey;
+        break;
+      case 'step:done':
+        s.stepsDone++;
+        break;
+      case 'step:fail':
+        s.stepsFailed++;
+        break;
+      case 'llm:done': {
+        if (r.heartbeat === true) break;
+        s.llmCalls++;
+        const usage = normalizeUsage(r.usage);
+        if (!usage) s.unknownUsage++;
+        else s.totalTokens += usage.totalTokens ?? 0;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return [...runs.values()]
+    .sort((a, b) => (b.lastEventAt ?? '').localeCompare(a.lastEventAt ?? ''))
+    .slice(0, Math.max(0, limit));
+}
