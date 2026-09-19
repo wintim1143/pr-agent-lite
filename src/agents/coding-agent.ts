@@ -83,13 +83,20 @@ export function getRepoRoot(target?: RepoTarget): string {
  * 于是该判断恒为 `true`,coding 步永远走占位降级分支,只打一行 warn —— M2 因此
  * 一直跑不出真实改动,且从结果上无法区分「agent 没跑」和「跑了但没改东西」。
  *
- * ## 优先级事实(官方 `code.claude.com/docs/en/settings`)
+ * ## 优先级事实(2026-09-19 实测更正)
  *
- * > Environment variables aren't a level in this stack... `ANTHROPIC_MODEL` exported in your
- * > shell applies over the `model` key from any file.
+ * 早前这里引官方文档「环境变量优先于文件」并据此认为「进程 env 能盖掉 settings.json」。
+ * **实测是反的**:往子进程注入 `ANTHROPIC_BASE_URL` 后,CLI 仍然用了
+ * `~/.claude/settings.json` 的 `env` 块里的端点 —— 假端点收不到任何请求,报错来自
+ * 用户配置里那个代理。复现:进程 env 指本地假端点、settings.json 指真实代理,
+ * 结果是代理的 401/403,不是假端点的应答。
  *
- * 即**真实进程环境变量优先于 settings.json 的 env 块**。这也解释了为什么往子进程注入
- * `ANTHROPIC_*` 会盖掉用户配好的代理端点(见 `buildCodingEnv`)。
+ * 该文档那句讲的是 **`model` 这个键**(shell 里的 `ANTHROPIC_MODEL` 盖过文件的 `model`),
+ * 而不是 `env` **块**。`env` 块属于 settings 层,压进程环境。
+ *
+ * ⇒ 想替换端点,必须走**优先级更高的 settings 层**:`Options.settings`(等价 `--settings`,
+ * 官方注明「highest priority among user-controlled settings」)。见 `buildCodingSettings`。
+ * 实测同样条件下 `--settings` 注入后假端点收到请求、`modelUsage` 显示的是注入的模型名。
  *
  * ## 现在的判定(命中任一即视为可用)
  *
@@ -185,7 +192,7 @@ export function describeCodingBackend(): string {
  * Claude Code CLI 支持 `API_TIMEOUT_MS`(单请求超时,毫秒);超时后 SDK 自动重试,
  * 把「上游偶发挂死」从致命变成可恢复。可用 `CODING_API_TIMEOUT_MS` 覆盖,设 `0` 关闭注入。
  */
-function buildCodingEnv(): Record<string, string | undefined> {
+export function buildCodingEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
   const override: Record<string, string | undefined> = {
     ANTHROPIC_BASE_URL: process.env.CODING_ANTHROPIC_BASE_URL,
@@ -199,6 +206,41 @@ function buildCodingEnv(): Record<string, string | undefined> {
     if (value) env[key] = value;
   }
   return env;
+}
+
+/**
+ * 构造传给 CLI 的 **settings 层**覆盖（`Options.settings`，等价 `--settings`）。
+ *
+ * ## 为什么光有 `buildCodingEnv()` 不够(2026-09-19 实测)
+ *
+ * `buildCodingEnv()` 注入的是**子进程环境变量**。而 CLI 启动时会读
+ * `~/.claude/settings.json` 的 `env` 块并应用 —— **settings 层压进程环境**。
+ * 于是用户机器上只要配过 `env.ANTHROPIC_BASE_URL`(例如指向本地代理),
+ * `CODING_ANTHROPIC_BASE_URL` 就**完全不生效**,且没有任何报错指向配置层:
+ * 表现是「跑起来了、但打到了另一个端点」—— 正是最该防的静默失败。
+ *
+ * 官方 `sdk.d.ts` 对 `Options.settings` 的说明:
+ * "loaded into the **flag settings** layer, which has the **highest priority among
+ *  user-controlled settings**." 实测确认它能盖过用户 settings.json 的 `env` 块。
+ *
+ * ## 只在**显式配置**时才返回覆盖(默认行为不变)
+ *
+ * `CODING_ANTHROPIC_*` 一个都没设 → 返回 `undefined`,`settings` 键不下发 ——
+ * CLI 照旧读用户自己的配置。这是 2026-09-04 那次修复要保住的通路:
+ * 「凭据该由 CLI 自己解析,项目不该越俎代庖」。**本次改动只让显式覆盖真的生效。**
+ *
+ * @returns 有覆盖项时 `{ env: {...} }`;一项都没有时 `undefined`
+ */
+export function buildCodingSettings(): { env: Record<string, string> } | undefined {
+  const env: Record<string, string> = {};
+  const put = (key: string, value: string | undefined): void => {
+    if (value) env[key] = value;
+  };
+  put('ANTHROPIC_BASE_URL', process.env.CODING_ANTHROPIC_BASE_URL);
+  put('ANTHROPIC_API_KEY', process.env.CODING_ANTHROPIC_API_KEY);
+  put('ANTHROPIC_AUTH_TOKEN', process.env.CODING_ANTHROPIC_AUTH_TOKEN);
+  put('ANTHROPIC_MODEL', process.env.CODING_ANTHROPIC_MODEL);
+  return Object.keys(env).length > 0 ? { env } : undefined;
 }
 
 /**
@@ -336,6 +378,11 @@ export async function getCodingAgent(
       // 需要显式换后端时,设置 CODING_ANTHROPIC_BASE_URL / _API_KEY / _AUTH_TOKEN / _MODEL。
       // 细节与历史坑见 buildCodingEnv 的注释。
       env: buildCodingEnv(),
+      // ⚠️ **两个都要给**（2026-09-19 实测）：`env` 是子进程环境变量，会被用户
+      // `~/.claude/settings.json` 的 `env` 块压掉；`settings` 进的是 flag 层，优先级最高，
+      // 才是真正生效的那一条。只给 `env` 的后果是**静默打到别的端点**（见 buildCodingSettings）。
+      // 未显式配置 `CODING_ANTHROPIC_*` 时为 `undefined`，CLI 行为与此前完全一致。
+      settings: buildCodingSettings(),
       // ⚠️ 非交互 shell 的 PATH 里**没有**用户级 bin 目录，直接 spawn 命令名会 NOT_FOUND。
       // 解法是「把可执行文件路径做成配置项」，而不是去建系统级软链 —— 不假设机器布局。
       // 未设置则用 SDK 内置的可执行文件。

@@ -25,6 +25,9 @@
 - **仓库内相对路径**（`reference/src/…`、`.workbuddy/memory/…`）—— 跨机器成立，是正常的
 - **参考副本内的文件名 + 行号**（`adapters/github.ts:375-394`）—— 这是「借鉴什么」的必要标识
 - **普通域名**（官方文档 URL）—— 只有 IP 才算主机信息
+- **家目录下的「工具配置位置」**（`~/.claude/settings.json`）—— 外部 CLI / agent 运行时约定的
+  路径，每台机器上完全一样，不携带本机布局信息。豁免范围**只到工具名一级**
+  （见 `HOME_PATH_EXEMPT`）：`~/Documents/…`、`~/code/…` 这类仍然命中。
 
 ## 默认跳过
 
@@ -76,6 +79,13 @@ CHECKS: list[tuple[str, re.Pattern[str], str]] = [
     ("依赖路径", re.compile(r"node_modules[\\/]"), "依赖安装目录"),
 ] + BANNED
 
+#: 家目录下**与机器无关**的已知位置 —— 外部工具（CLI / agent 运行时）约定的配置目录。
+#: 每台机器上都是同一个路径，不携带「本机布局」信息，因此豁免家目录检查。
+#:
+#: ⚠️ 只列**具体到工具名**的目录。`~/Documents/...`、`~/code/...` 这类真·机器路径
+#: 照旧命中 —— 豁免的是「工具约定」，不是「家目录」这个前缀本身。
+HOME_PATH_EXEMPT = re.compile(r"~[\\/]\.(?:claude|workbuddy)[\\/]")
+
 
 def scan(path: str, extra: list[tuple[str, re.Pattern[str], str]]) -> list[tuple[int, str, str, str]]:
     """返回 [(行号, 类别, 说明, 该行原文)]。"""
@@ -88,7 +98,10 @@ def scan(path: str, extra: list[tuple[str, re.Pattern[str], str]]) -> list[tuple
 
     for lineno, line in enumerate(text.splitlines(), 1):
         for kind, pattern, desc in CHECKS + extra:
-            if pattern.search(line):
+            # 家目录这条先摘掉豁免片段再判 —— 同一行若还含别的家目录路径，仍会被抓到。
+            # ⚠️ 占位符**不得再带 `~/`**，否则它自己就会被同一条规则命中（实测踩过）。
+            subject = HOME_PATH_EXEMPT.sub("<tool-config>/", line) if desc == "家目录" else line
+            if pattern.search(subject):
                 hits.append((lineno, kind, desc, line.strip()))
     return hits
 
