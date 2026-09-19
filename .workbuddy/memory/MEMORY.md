@@ -74,7 +74,7 @@
 4. **编码链显式覆盖被 settings 层压掉**（2026-09-19 实测定位 + 已修）→ `CODING_ANTHROPIC_*` **只注入子进程 env 时完全不生效**：CLI 读 `~/.claude/settings.json` 的 `env` 块，而**那一层压进程环境**。症状同 #3（看着在跑但打到别的端点），且**无报错指向配置层**。修法：**同时**给 `Options.settings`（flag 层，"highest priority among user-controlled settings"）；且**未显式配置时不得下发 settings**（空 `{env:{}}` 会盖掉用户配好的端点）。单测 `test/coding-env.test.ts`。见 AGENTS.md #23。
 5. **未跟踪新文件的内容从不进 diff**（2026-09-19 真端点首跑暴露 + 已修）→ `git diff` 对未跟踪文件无从表达，而 `git add -A` 在**闸门之后**。症状 = **闸门恒判负**（需求「新增 X 文件」永远过不去 —— 正是核心用例）。修法：`renderUntrackedDiff` 渲染内容 + **保底预算**（不被大 diff 挤掉）。单测 `test/diff-untracked.test.ts`。见 AGENTS.md #24。
 6. **编码步零改动照样 `step:done`**（同上 + 已修）→ 模型反问不动手时，闸门才说「需求未实现」，把「模型没动手」伪装成「实现不合格」——**归因错位**。修法：`codingChangeFailure` 纯函数**当场**判负 + 提示词写明无人值守/不要反问。单测 `test/coding-no-change.test.ts`。见 AGENTS.md #25。
-7. **编码步上限从未被披露**（同上 + 已修）→ 被 `Reached maximum budget ($2)` 在 249s 掐断，自检却没提过；且该值是 CLI 算的**名义成本**，接中转站时**与实付无关**。修法：`codingLimits()` 单一来源，自检 / SDK 装配 / 步骤超时**三处同读**并打印。见 AGENTS.md #26。
+7. **编码步上限从未被披露**（同上 + 已修）→ 被 `Reached maximum budget ($2)` 在 249s 掐断，自检却没提过；且该值是 CLI 算的**名义成本**，接中转站时**与实付无关**。修法：`codingLimits()` 单一来源，自检 / SDK 装配 / 步骤超时**三处同读**并打印；默认值 `2 → 50`（实测「新增一个小文件」单步就吃 **1,646,963 input tokens**，`$2` 会掐断**正常任务**）；`0`/负 = **关闭**（**不下发**该字段，传 `0` 会被当成「0 美元预算」立刻全挂）；坏值回落默认、**绝不传 NaN**；真实名义成本落盘到 `llm:done` 的 `costUsd`。见 AGENTS.md #26。
 
 > **七项的实测状态（2026-09-19）**：②usage 未退化（真端点一轮 4 次调用 / 1,649,667 in / 8,146 out，`run_cost` 与日志逐条相加一致、`unknownUsage=0`）；③启动自检无条件打印已实现；④⑤⑥⑦ 已修且有单测守住，且**都在真端点首跑中被实际撞到过**；① 仍待接真仓库时验。
 >
@@ -87,7 +87,7 @@
 - **心跳已存在**（`dev-workflow.ts:745-760`，30s，环境变量可调，0 = 关闭）；缺口只是抽成可复用 + 覆盖测试步 + 扩 payload。
 - 🧪 **`scripts/stub-endpoint.cjs` —— 确定性双协议假端点**（Anthropic `/v1/messages` 走编码链、OpenAI `/chat/completions` 走闸门链）。**这是把「管道通不通」与「端点通不通」拆开的关键杠杆**：真端点不可用（区域封锁 / 订阅失效）时仍能完整验链路。也能下发一条该被拦的命令来**验证围栏真的挂上了**（`--tool Bash --command 'rm -rf <哨兵>'` → 看 `guard:deny` + 哨兵存活）。
 - ✅ **围栏 hook 在官方 SDK 下确认有效**（2026-09-19 实测）：`PreToolUse` hook 拦截生效、`guard:deny` 事件归属到 run。这条原本列在「已知风险」里，现已关闭。
-- ✅ **M1+M2+M3 代码已完成并提交**（`f63d6ed` / `744e658` / `0f9e0b9` / `c4dc1ed` / `a47341b`）。口径：**18 套件 / 278 声明 / 347 执行**，全绿。
+- ✅ **M1+M2+M3 代码已完成并提交**（`f63d6ed` / `744e658` / `0f9e0b9` / `c4dc1ed` / `a47341b` / `9cba708`）。口径：**18 套件 / 280 声明 / 349 执行**，全绿。
 - ✅ **真端点整链已验通（2026-09-19）**：编码链走用户本机 Claude Code CLI 自己的配置，闸门链走 OpenAI 兼容直连。逐项：建分支 → CLI **真写文件** → test `passed=true` → review `approve` → **真产生提交**；base 分支未被改动。经 MCP `dev_start`（2ms 返回）触发同样全绿（`stepsDone=6/stepsFailed=0`）。**唯一入口已验。**
 - ⚠️ **两条链的端点可以不同，且必须分别配**：闸门链**不能用本机 cc-switch 代理端口** —— 它只答 Anthropic 形状（`/v1/messages`），`/v1/chat/completions` 回「未配置供应商」（`{"error":{"message":"未配置供应商","type":"proxy_error"}}`）。闸门链要用服务商**官方 OpenAI 兼容端点**（DeepSeek 官方 baseURL **不带 `/v1`**）。
 - ⚠️ **编码 CLI 会加载用户自己的 `~/.claude/settings.json`**：`enabledPlugins` / `hooks` 都在生效范围内（实测 agent 额外产出一份 `docs/superpowers/plans/…md`）。只覆盖 `env` 层不够 —— 完全隔离要用 `settingSources: []`，但那会一并关掉用户凭据通路。**待定项 Q-L。**
