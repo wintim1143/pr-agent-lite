@@ -1,0 +1,14 @@
+# 🎨 editorconfig.org
+
+root = true
+
+[*]
+charset = utf-8
+# 与 .prettierrc.js 的 endOfLine:'auto' + .gitattributes(* text=auto eol=lf) 协同:
+# git 在 commit 时把 CRLF 归一为 LF 入库(eol=lf),checkout 时给 LF;prettier 用 auto 容忍
+# 工作区 CRLF/VSCode 不报删除 CR。三处一致即可彻底消除"格式化后换行反复报警"。
+end_of_line = lf
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = true
+insert_final_newline = true

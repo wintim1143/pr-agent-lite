@@ -1,31 +1,77 @@
 [
   {
-    "file": "test/controller/api.test.ts",
+    "file": "test/dev-gate-contract.test.ts",
     "is_setup": false,
-    "lines": 26,
-    "declared": 1,
+    "lines": 127,
+    "declared": 10,
     "each_sites": 0,
-    "executed": 1,
-    "src_modules": [],
-    "ext_modules": [
-      "@midwayjs/koa",
-      "@midwayjs/mock"
+    "unresolved_each": 0,
+    "executed": 10,
+    "src_modules": [
+      "../src/workflows/dev-workflow"
     ],
-    "framework_only": true
+    "ext_modules": [
+      "zod"
+    ],
+    "framework_only": false
   },
   {
-    "file": "test/controller/home.test.ts",
+    "file": "test/entry-idempotency.test.ts",
     "is_setup": false,
-    "lines": 25,
-    "declared": 1,
+    "lines": 271,
+    "declared": 16,
     "each_sites": 0,
-    "executed": 1,
-    "src_modules": [],
-    "ext_modules": [
-      "@midwayjs/koa",
-      "@midwayjs/mock"
+    "unresolved_each": 0,
+    "executed": 16,
+    "src_modules": [
+      "../src/adapters/dedup-store",
+      "../src/adapters/inbound-poll",
+      "../src/adapters/state-db"
     ],
-    "framework_only": true
+    "ext_modules": [],
+    "framework_only": false
+  },
+  {
+    "file": "test/github-adapter.test.ts",
+    "is_setup": false,
+    "lines": 274,
+    "declared": 15,
+    "each_sites": 0,
+    "unresolved_each": 0,
+    "executed": 15,
+    "src_modules": [
+      "../src/adapters/github"
+    ],
+    "ext_modules": [],
+    "framework_only": false
+  },
+  {
+    "file": "test/guard-hook.test.ts",
+    "is_setup": false,
+    "lines": 41,
+    "declared": 3,
+    "each_sites": 0,
+    "unresolved_each": 0,
+    "executed": 3,
+    "src_modules": [
+      "../src/agents/coding-agent"
+    ],
+    "ext_modules": [],
+    "framework_only": false
+  },
+  {
+    "file": "test/guard.test.ts",
+    "is_setup": false,
+    "lines": 293,
+    "declared": 34,
+    "each_sites": 8,
+    "unresolved_each": 0,
+    "executed": 95,
+    "src_modules": [
+      "../src/agents/guard"
+    ],
+    "ext_modules": [],
+    "framework_only": false
   },
   {
     "file": "test/jest.setup.ts",
@@ -33,116 +79,51 @@
     "lines": 27,
     "declared": 0,
     "each_sites": 0,
+    "unresolved_each": 0,
     "executed": 0,
     "src_modules": [],
     "ext_modules": [],
     "framework_only": false
   },
   {
-    "file": "test/mastra/dev-gate-contract.test.ts",
-    "is_setup": false,
-    "lines": 127,
-    "declared": 10,
-    "each_sites": 0,
-    "executed": 10,
-    "src_modules": [
-      "../../src/mastra/workflows/dev-workflow"
-    ],
-    "ext_modules": [
-      "zod"
-    ],
-    "framework_only": false
-  },
-  {
-    "file": "test/mastra/entry-idempotency.test.ts",
-    "is_setup": false,
-    "lines": 271,
-    "declared": 16,
-    "each_sites": 0,
-    "executed": 16,
-    "src_modules": [
-      "../../src/mastra/adapters/dedup-store",
-      "../../src/mastra/adapters/inbound-poll",
-      "../../src/mastra/adapters/state-db"
-    ],
-    "ext_modules": [],
-    "framework_only": false
-  },
-  {
-    "file": "test/mastra/github-adapter.test.ts",
-    "is_setup": false,
-    "lines": 274,
-    "declared": 15,
-    "each_sites": 0,
-    "executed": 15,
-    "src_modules": [
-      "../../src/mastra/adapters/github"
-    ],
-    "ext_modules": [],
-    "framework_only": false
-  },
-  {
-    "file": "test/mastra/guard-hook.test.ts",
-    "is_setup": false,
-    "lines": 41,
-    "declared": 3,
-    "each_sites": 0,
-    "executed": 3,
-    "src_modules": [
-      "../../src/mastra/agents/coding-agent"
-    ],
-    "ext_modules": [],
-    "framework_only": false
-  },
-  {
-    "file": "test/mastra/guard.test.ts",
-    "is_setup": false,
-    "lines": 293,
-    "declared": 34,
-    "each_sites": 8,
-    "executed": 46,
-    "src_modules": [
-      "../../src/mastra/agents/guard"
-    ],
-    "ext_modules": [],
-    "framework_only": false
-  },
-  {
-    "file": "test/mastra/llm-providers.test.ts",
+    "file": "test/llm-providers.test.ts",
     "is_setup": false,
     "lines": 171,
     "declared": 20,
     "each_sites": 0,
+    "unresolved_each": 0,
     "executed": 20,
     "src_modules": [
-      "../../src/mastra/llm/providers"
+      "../src/llm/providers"
     ],
     "ext_modules": [],
     "framework_only": false
   },
   {
-    "file": "test/mastra/log-store.test.ts",
+    "file": "test/log-store.test.ts",
     "is_setup": false,
     "lines": 246,
     "declared": 19,
     "each_sites": 0,
+    "unresolved_each": 0,
     "executed": 19,
     "src_modules": [
-      "../../src/mastra/log-store"
+      "../src/log-store"
     ],
     "ext_modules": [],
     "framework_only": false
   },
   {
-    "file": "test/mastra/m5-target-contract.test.ts",
+    "file": "test/m5-target-contract.test.ts",
     "is_setup": false,
     "lines": 78,
     "declared": 7,
     "each_sites": 0,
+    "unresolved_each": 0,
     "executed": 7,
     "src_modules": [
-      "../../src/mastra/adapters/repo-registry",
-      "../../src/mastra/workflows/dev-workflow"
+      "../src/adapters/repo-registry",
+      "../src/workflows/dev-workflow"
     ],
     "ext_modules": [
       "zod"
@@ -150,87 +131,75 @@
     "framework_only": false
   },
   {
-    "file": "test/mastra/progress.test.ts",
+    "file": "test/progress.test.ts",
     "is_setup": false,
     "lines": 205,
     "declared": 17,
     "each_sites": 0,
+    "unresolved_each": 0,
     "executed": 17,
     "src_modules": [
-      "../../src/mastra/log-store",
-      "../../src/mastra/progress"
+      "../src/log-store",
+      "../src/progress"
     ],
     "ext_modules": [],
     "framework_only": false
   },
   {
-    "file": "test/mastra/repo-lock.test.ts",
+    "file": "test/repo-lock.test.ts",
     "is_setup": false,
     "lines": 219,
     "declared": 13,
     "each_sites": 0,
+    "unresolved_each": 0,
     "executed": 13,
     "src_modules": [
-      "../../src/mastra/adapters/repo-lock",
-      "../../src/mastra/adapters/state-db"
+      "../src/adapters/repo-lock",
+      "../src/adapters/state-db"
     ],
     "ext_modules": [],
     "framework_only": false
   },
   {
-    "file": "test/mastra/repo-registry.test.ts",
+    "file": "test/repo-registry.test.ts",
     "is_setup": false,
     "lines": 323,
     "declared": 33,
     "each_sites": 0,
+    "unresolved_each": 0,
     "executed": 33,
     "src_modules": [
-      "../../src/mastra/adapters/github",
-      "../../src/mastra/adapters/repo-registry",
-      "../../src/mastra/agents/coding-agent"
+      "../src/adapters/github",
+      "../src/adapters/repo-registry",
+      "../src/agents/coding-agent"
     ],
     "ext_modules": [],
     "framework_only": false
   },
   {
-    "file": "test/mastra/state-db.test.ts",
+    "file": "test/state-db.test.ts",
     "is_setup": false,
     "lines": 169,
     "declared": 12,
     "each_sites": 0,
+    "unresolved_each": 0,
     "executed": 12,
     "src_modules": [
-      "../../src/mastra/adapters/state-db"
+      "../src/adapters/state-db"
     ],
     "ext_modules": [],
     "framework_only": false
   },
   {
-    "file": "test/mastra/storage.test.ts",
-    "is_setup": false,
-    "lines": 139,
-    "declared": 2,
-    "each_sites": 0,
-    "executed": 2,
-    "src_modules": [
-      "../../src/mastra"
-    ],
-    "ext_modules": [
-      "@mastra/core",
-      "@mastra/core/workflows",
-      "zod"
-    ],
-    "framework_only": true
-  },
-  {
-    "file": "test/mastra/test-runner.test.ts",
+    "file": "test/test-runner.test.ts",
     "is_setup": false,
     "lines": 260,
     "declared": 19,
     "each_sites": 1,
-    "executed": 28,
+    "unresolved_each": 0,
+    "executed": 27,
     "src_modules": [
-      "../../src/mastra/adapters/test-runner"
+      "../src/adapters/test-runner"
     ],
     "ext_modules": [
       "fs"
