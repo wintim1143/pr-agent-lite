@@ -116,6 +116,16 @@
 
 - **部署目标**：一台远程服务器，与 Hermes 同机。**连接方式见本地 SSH 配置，不入库。**
 - 本机**没装 Hermes** ⇒ 环境侧改动无法本地预演。
+- 🔴 **Hermes 侧实况（2026-09-19 23:26 只读探测）** —— **文档里 M0 标 ✅ 与实况不符**：
+  - Hermes **v0.15.2**，gateway **在跑**（systemd 托管，PID 355985，2026-09-18 22:37 起）。
+  - **已连通平台 = `lightclawbot`（插件）+ `weixin`（iLink）**，日志原话 `Gateway running with 2 platform(s)`。
+  - ❌ **飞书通道未打通**：`channel_directory.json` 的 `feishu` 为空数组；`.env` 26 个键里**零个** feishu/lark 键；`~/.hermes/plugins/` 下只有 `lightclawbot`。
+    ⇒ **M0 出口验收第 3 条「飞书群里对 Hermes 说一句话」不成立**。当前可对话的是微信与 lightclawbot。
+  - ❌ **MCP 未注册**：`hermes mcp list` → `No MCP servers configured`。
+  - ❌ **项目代码未投递**：`~/pr-agent-lite` / `~/code/pr-agent-lite` / `~/apps/…` / `/opt/…` 全不存在。
+  - ✅ **`~/code` = 演练仓**：分支 `feature/drill`，提交 `96e5849 feat: add calc.js (agent-produced)`，含 `.claude/`（CLI 真在那里跑过）。**这就是用户说的「code 文件夹」。**
+  - ✅ 服务器侧脚本已投递：`~/setup-claude-deepseek.sh`、`~/setup-claude-permissions.sh`。运行时 node v22.22.3 / python 3.12.3 / git 2.43.0。
+  - ⚠️ lightclawbot 插件约每小时有 `fire_and_forget` 发送记录，像 cron 在投递什么，**未查明**。
 - 本机代理只放通 `api.github.com` 与 `git clone github.com`；`raw.githubusercontent.com` = 502。
 - 🔴 **服务器出口实测（2026-09-19）**：npm registry ✅ / **Anthropic 官方端点被区域封锁** ❌ —— `api.anthropic.com` 返回 403 `{"type":"forbidden","message":"Request not allowed"}`（Cloudflare edge），换浏览器 UA 仍 403 ⇒ **是 edge 层拦截、与 key 无关，配了合法 key 也照样 403**；`claude.ai/install.sh` 同为 "App unavailable in region"。
 - 🔴 **GitHub 必须走 SSH，不能走 HTTPS**：TCP 全通但 `github.com` / `codeload` 的 **HTTPS 被 SNI 阻断**（同域名族的 `api.github.com`、`raw.githubusercontent.com` 反而通）；`ssh -T git@github.com` 返回 `Permission denied (publickey)` ⇒ **协议层通、仅缺 key**。已生成服务器 key（`~/.ssh/id_ed25519`）+ 配好 `~/.ssh/config`，并移除失效的 `ghproxy.com` insteadOf 重写。**所有第三方 git 镜像均失效**。第一版这些都用不上（D8 不碰远端）。
