@@ -26,9 +26,14 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { logStartupSelfCheck } from './startup.js';
 import { repoList, runCost, runStatus } from './tools/readonly.js';
+import { parseRepoTarget } from './adapters/repo-registry.js';
 
 /** 把任意结果包成 MCP 工具返回值：结构化数据给机器，可读文本给人。 */
 function asToolResult(structured: Record<string, unknown>, humanText: string) {
@@ -171,6 +176,96 @@ export function buildServer(): McpServer {
         `合计：调用 ${t.llmCalls} 次，输入 ${t.inputTokens} / 输出 ${t.outputTokens} / 合计 ${t.totalTokens}` +
           `（未回传用量 ${t.unknownUsage} 次）\n按仓库：\n${human}`
       );
+    }
+  );
+
+  // ── 4. 触发一次编码（唯一有写入副作用的工具）─────────────────────
+  server.registerTool(
+    'dev_start',
+    {
+      title: '开始一次编码',
+      description:
+        '按需求标题在目标仓库上建 feature 分支并让编码执行体真正改文件，随后依次过测试/审核/commit 闸门。' +
+        '⚠️ **立即返回**：只给出 runId，真正的工作在独立进程里跑 —— 用 run_status 或状态页看进度。' +
+        '默认不接触远端（不 push、不开 PR）。',
+      inputSchema: {
+        target: z.string().describe('目标仓库的逻辑标识 `owner/repo`；本机路径由仓库注册表解析'),
+        title: z.string().min(1).describe('需求标题（决定分支名与 commit 语义）'),
+        body: z.string().optional().describe('需求正文'),
+        issueNumber: z.number().int().nonnegative().optional().describe('编号；不传则按启动时刻生成'),
+        baseBranch: z.string().optional().describe('覆盖注册表里的 base 分支'),
+        allowRemote: z.boolean().optional().describe('是否允许推送并开 PR（默认否）'),
+      },
+      // 这个工具**不是只读的**（会在目标仓建分支、改文件）。标注如实给出，
+      // 批不批准由外侧网关按其策略决定 —— 本项目不替它做准入判断，也不把判断交给模型。
+      // 传 `allowRemote: true` 会真的推远端。默认关闭，忘了传就是「不做事」而不是「悄悄推上去」。
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ target, title, body, issueNumber, baseBranch, allowRemote }) => {
+      // 1) 入参校验在**本进程**做：不合法的入参应当立刻回给调用方，
+      //    而不是起一个注定失败的进程、让人去日志里找原因。
+      let parsedTarget;
+      try {
+        parsedTarget = parseRepoTarget(target, baseBranch);
+      } catch (e) {
+        const msg = `target 格式非法（期望 owner/repo）：${e instanceof Error ? e.message : String(e)}`;
+        return { content: [{ type: 'text' as const, text: msg }], isError: true };
+      }
+
+      // 2) 触发体必须存在。缺它时若只回一个 runId，调用方会以为「已经开始了」——
+      //    而实际上什么都没发生，且日志里也不会有任何记录（进程都没起来）。
+      //    这类「假成功」比直接报错贵得多。
+      const runnerPath = join(__dirname, 'dev-runner.js');
+      if (!existsSync(runnerPath)) {
+        const msg =
+          `找不到运行时入口 ${runnerPath}。这通常意味着还没构建 —— 先跑 \`npm run build\`，` +
+          `再用 \`npm run mcp\` 启动服务。`;
+        return { content: [{ type: 'text' as const, text: msg }], isError: true };
+      }
+
+      const runId = `run-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${randomUUID().slice(0, 4)}`;
+      const args = [
+        runnerPath,
+        `--run-id=${runId}`,
+        `--target=${parsedTarget.owner}/${parsedTarget.repo}`,
+        `--title=${title}`,
+        `--base-branch=${parsedTarget.baseBranch}`,
+        ...(body ? [`--body=${body}`] : []),
+        ...(issueNumber !== undefined ? [`--issue-number=${issueNumber}`] : []),
+        ...(allowRemote ? ['--allow-remote'] : []),
+      ];
+
+      // 3) **脱离父进程**起子进程：`detached` + `unref` 让这次 run 不会随 MCP 会话结束而消失，
+      //    也不能继承父进程的 stdio —— 父进程的 stdout 是 MCP 协议通道，泄漏一行出去就会冲掉协议。
+      const child = spawn(process.execPath, args, {
+        detached: true,
+        stdio: 'ignore',
+        cwd: process.cwd(),
+        env: process.env,
+      });
+      child.unref();
+
+      const host = process.env.STATUS_HOST?.trim() || '127.0.0.1';
+      const port = Number(process.env.STATUS_PORT ?? 8787);
+      const structured = {
+        started: true,
+        runId,
+        pid: child.pid ?? null,
+        target: `${parsedTarget.owner}/${parsedTarget.repo}`,
+        baseBranch: parsedTarget.baseBranch,
+        issueNumber: issueNumber ?? null,
+        // 编号由子进程生成（按启动时刻）；调用方想知道确切值时以 run_status 为准
+        issueNumberDerivedByRunner: issueNumber === undefined,
+        stopAfterCommit: !allowRemote,
+        statusUrl: `http://${host}:${port}/`,
+        notes: [
+          '本次调用**已经返回**，编码仍在独立进程里进行 —— 用 run_status(runId) 或状态页看进度。',
+          allowRemote
+            ? '已允许接触远端（会 push 并尝试开 PR）。'
+            : '默认不接触远端：跑完 commit 即止，不 push、不开 PR。',
+        ],
+      };
+      return withNotes(structured, `已开始：runId = ${runId}（进程 ${child.pid ?? '?'}）`);
     }
   );
 
