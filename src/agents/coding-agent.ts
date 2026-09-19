@@ -274,6 +274,53 @@ export function resolveProtectedBranchNames(target?: RepoTarget): string[] {
 }
 
 /**
+ * 编码步的运行上限 —— **启动自检、SDK 装配、步骤超时三处读的都是这一个函数**。
+ *
+ * ## 为什么必须只有一处（2026-09-19，真跑踩到）
+ *
+ * 一次经 MCP 触发的真实运行，编码跑了 249 秒后被掐断，`run:end` 的理由是
+ * `Claude Code returned an error result: Reached maximum budget ($2)` ——
+ * 而**启动自检从头到尾没提过有这么个上限**。事后只能靠翻失败理由才知道它存在。
+ *
+ * 更麻烦的是这个 `$2` 是 **Claude Code CLI 用自带价目表算出来的名义成本**：
+ * 当编码链指向中转站 / 非 Anthropic 官方端点时，它跟实际计费没有关系，
+ * 却照样能把一次正常编码拦腰截断 —— 「看着在跑，其实被上限掐了」，
+ * 与「模型名幻觉」同一类：不报错的失效。
+ *
+ * 所以上限本身保留（无人值守必须有失控保护），但要**变得可见**：
+ * 自检打印它、单测钉住它、`.env.example` 说明它。
+ *
+ * ## 纯函数
+ *
+ * env 可注入，无 IO —— 便于单测，也避免「自检读一处、装配读另一处」的分叉。
+ */
+export function codingLimits(env: NodeJS.ProcessEnv = process.env): {
+  /** SDK 的轮次上限 */
+  maxTurns: number;
+  /** SDK 的名义成本上限（美元）；接中转站时与实际计费无关 */
+  maxBudgetUsd: number;
+  /** 本项目对编码步自身的超时兜底（毫秒） */
+  timeoutMs: number;
+} {
+  return {
+    maxTurns: Number(env.CODING_MAX_TURNS ?? 30),
+    maxBudgetUsd: Number(env.CODING_MAX_BUDGET_USD ?? 2),
+    timeoutMs: Number(env.CODING_TIMEOUT_MS ?? 600_000),
+  };
+}
+
+/**
+ * 供启动自检打印的一行上限摘要（不含密钥）。
+ *
+ * 三个值一起give出，因为「被掐断」的原因只可能是其中之一，
+ * 而排障时最贵的正是「不知道有这三个上限」。
+ */
+export function describeCodingLimits(env: NodeJS.ProcessEnv = process.env): string {
+  const l = codingLimits(env);
+  return `maxTurns=${l.maxTurns} maxBudgetUsd=$${l.maxBudgetUsd}(CLI 名义成本,接中转站时与实际计费无关) 步骤超时=${l.timeoutMs}ms`;
+}
+
+/**
  * 构造围栏用的 PreToolUse hook。
  *
  * 为什么必须走 hook 而不是 `canUseTool`:claude-agent-sdk 源码明确说明,
@@ -367,6 +414,7 @@ export async function getCodingAgent(
   // 必须推迟到真正跑 coding 步时才加载。`guard-hook` 等单测因此不会被牵连。
   const { ClaudeCliAgent: Agent } = await import('./claude-cli.js');
   const repoRoot = cwd || getRepoRoot(target);
+  const limits = codingLimits();
   return new Agent({
     id: 'coding-agent',
     name: 'Coding Agent',
@@ -412,9 +460,9 @@ export async function getCodingAgent(
         // guard.ts 内部会与默认值取并集,传参只增不减。
         PreToolUse: [{ hooks: [makeGuardHook(repoRoot, resolveProtectedBranchNames(target), runId)] }],
       },
-      // 无人值守的成本与失控上限(可被 env 覆盖)
-      maxTurns: Number(process.env.CODING_MAX_TURNS ?? 30),
-      maxBudgetUsd: Number(process.env.CODING_MAX_BUDGET_USD ?? 2),
+      // 无人值守的成本与失控上限(可被 env 覆盖) —— 与启动自检、编码步超时读的是**同一处**
+      maxTurns: limits.maxTurns,
+      maxBudgetUsd: limits.maxBudgetUsd,
     },
   });
 }

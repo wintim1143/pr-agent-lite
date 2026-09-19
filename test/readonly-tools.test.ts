@@ -236,3 +236,57 @@ describe('repoList —— 未配置与「没有仓库」必须分开', () => {
     expect(r.notes.join(' ')).toContain('clone');
   });
 });
+
+/**
+ * `skipped` 终态必须被解释清楚（2026-09-19，真跑暴露）。
+ *
+ * 一次**完整成功**的 run —— 建分支 → 真写文件 → 三闸门全过 → 真产生提交 ——
+ * 终态就是 `skipped`：`stopAfterCommit` 在 merge 前收住，而 `progress.ts` 把
+ * `skipped` 与 `ok` 一起算作「非失败」，于是最后一个 `run:end` 带的就是它。
+ *
+ * 单独摆一个「状态：skipped」给调用方，极易被读成「什么都没做」——
+ * 而实际情况恰恰相反:代码已经写完并提交了。这里补的是一句**事实**
+ * （前置步骤的成功计数 + 该看哪个事件），不是替调用方下「成功」的结论。
+ */
+describe('run_status —— skipped 的语义要摆明，别让它读成「什么都没做」', () => {
+  it('全步成功 + skipped → 明确说明「按配置提前收住，不是失败」并指向 commit 事件', () => {
+    writeLog([
+      rec('run:start', 's1', { ts: '2026-09-19T00:00:00.000Z', stage: 'checkout' }),
+      rec('step:done', 's1', { ts: '2026-09-19T00:00:01.000Z', stage: 'checkout' }),
+      rec('step:done', 's1', { ts: '2026-09-19T00:00:40.000Z', stage: 'coding' }),
+      rec('step:done', 's1', { ts: '2026-09-19T00:00:50.000Z', stage: 'commit' }),
+      rec('run:end', 's1', { ts: '2026-09-19T00:00:51.000Z', stage: 'merge', status: 'skipped' }),
+    ]);
+    const r = runStatus({ runId: 's1' });
+
+    expect(r.run?.status).toBe('skipped');
+    const note = r.notes.join(' ');
+    expect(note).toContain('skipped');
+    expect(note).toContain('按配置提前收住');
+    // 必须点明「不是失败」「不是什么都没做」—— 这两句才是防误读的关键
+    expect(note).toContain('而非失败');
+    expect(note).toContain('什么都没做');
+    // 并给出下一步该看什么，而不是让人自己猜
+    expect(note).toContain('stage=commit');
+  });
+
+  it('失败终态不套这句解释（否则会把真失败说成「按配置收住」）', () => {
+    writeLog([
+      rec('run:start', 'f1', { ts: '2026-09-19T00:00:00.000Z' }),
+      rec('step:fail', 'f1', { ts: '2026-09-19T00:00:30.000Z', stage: 'test' }),
+      rec('run:end', 'f1', { ts: '2026-09-19T00:00:31.000Z', stage: 'test', status: 'failed' }),
+    ]);
+    const note = runStatus({ runId: 'f1' }).notes.join(' ');
+    expect(note).not.toContain('按配置提前收住');
+  });
+
+  it('skipped 但有失败步骤时不套这句解释 —— 两者同时在就不能替它美化', () => {
+    writeLog([
+      rec('run:start', 's2', { ts: '2026-09-19T00:00:00.000Z' }),
+      rec('step:fail', 's2', { ts: '2026-09-19T00:00:30.000Z', stage: 'coding' }),
+      rec('run:end', 's2', { ts: '2026-09-19T00:00:31.000Z', stage: 'merge', status: 'skipped' }),
+    ]);
+    const note = runStatus({ runId: 's2' }).notes.join(' ');
+    expect(note).not.toContain('按配置提前收住');
+  });
+});

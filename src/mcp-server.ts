@@ -110,7 +110,9 @@ export function buildServer(): McpServer {
         if (!r.run) {
           return withNotes(
             r as unknown as Record<string, unknown>,
-            `没有找到 runId = ${r.runId} 的运行记录。`
+            `没有找到 runId = ${r.runId} 的运行记录。` +
+              `若这个 runId 刚由 dev_start 返回，可能只是第一条记录还没落盘（子进程启动需要时间）—— ` +
+              `隔几秒重试即可；**持续查不到**才是真的不存在。`
           );
         }
         const s = r.run;

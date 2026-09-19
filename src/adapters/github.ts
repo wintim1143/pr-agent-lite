@@ -15,7 +15,7 @@
  * 所有校验/报错都延迟到调用 `githubCheckout` / `githubPushAndOpenPR` / `githubMergePR` 时才暴露。
  */
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import {
   resolveRepoEntry,
@@ -414,6 +414,107 @@ function countAhead(root: string, base: string, branch: string): number {
 }
 
 /**
+ * 把**未跟踪的新文件**渲染成 diff 文本（**含文件内容**）。
+ *
+ * ## 为什么必须自己渲染（2026-09-19，真跑暴露的静默失效）
+ *
+ * `git diff HEAD` / `git diff <base>...HEAD` **永远看不见未跟踪文件** —— 在 git 眼里
+ * 它们还不存在。旧实现只把文件名列一行（`[未跟踪的新文件]\n<路径>`），于是闸门收到的
+ * 是「有这么个文件」而**不是「文件里写了什么」**。
+ *
+ * 后果不是报错，而是**闸门恒判负**：
+ * 需求「新增 src/greet.js」→ agent 确实写了、内容也对 → 但 diff 里只有文件名 →
+ * 闸门的 LLM 无从确认函数是否真的导出 → 诚实回答 `requirementMet=false`。
+ * 判负是对的，**输入是错的**。而「新增文件」正是本项目的核心用例。
+ *
+ * 上游 `commit` 步的 `git add -A`（`github.ts` 的 gitCommit）发生在**闸门之后**，
+ * 所以闸门这一路上永远不会自动看到新文件内容 —— 必须在这里补。
+ *
+ * ## 渲染格式
+ *
+ * 按 git 的 new-file diff 形状输出（`new file mode` / `--- /dev/null` /
+ * `@@ -0,0 +1,N @@` + `+` 前缀行），让闸门的 LLM 按它已经熟悉的形状读。
+ *
+ * ## 边界
+ *
+ * - **二进制**（含 NUL 字节）：不渲染内容，只记一条说明 —— 乱码进 prompt 只会干扰判定。
+ * - **超长**：逐文件累计，超预算的文件不再展开并在说明里标注，**不静默丢弃**。
+ * - 读不到的文件（权限/竞态）：记一条说明，不抛错。
+ *
+ * @param root     目标仓库根目录
+ * @param paths    相对仓库根的未跟踪文件路径（来自 `git ls-files --others --exclude-standard`）
+ * @param maxChars 内容预算上限
+ */
+export function renderUntrackedDiff(
+  root: string,
+  paths: readonly string[],
+  maxChars: number
+): { text: string; summary: string; truncated: boolean } {
+  if (paths.length === 0) return { text: '', summary: '', truncated: false };
+
+  const notes: string[] = [];
+  const chunks: string[] = [];
+  let used = 0;
+  let truncated = false;
+
+  for (const p of paths) {
+    const abs = join(root, p);
+    let raw: string;
+    try {
+      // 先看大小：几十 MB 的文件没必要读进来再发现太长
+      const size = statSync(abs).size;
+      if (size > 2_000_000) {
+        notes.push(`- ${p}（${size} 字节，过大，未展开内容）`);
+        truncated = true;
+        continue;
+      }
+      raw = readFileSync(abs, 'utf8');
+    } catch {
+      notes.push(`- ${p}（无法读取，未展开内容）`);
+      continue;
+    }
+
+    if (raw.includes('\u0000')) {
+      notes.push(`- ${p}（二进制，未展开内容）`);
+      continue;
+    }
+
+    const lines = raw.length ? raw.replace(/\n+$/, '').split('\n') : [];
+    const header =
+      `diff --git a/${p} b/${p}\n` +
+      `new file mode 100644\n` +
+      `--- /dev/null\n` +
+      `+++ b/${p}\n` +
+      `@@ -0,0 +1,${lines.length} @@\n`;
+    const body = lines.length ? lines.map(l => `+${l}`).join('\n') : '+(空文件)';
+    const chunk = `${header}${body}\n`;
+
+    if (used + chunk.length > maxChars) {
+      const remain = maxChars - used;
+      // 剩下够写个头 + 一点内容才值得展开；否则只记一行说明
+      if (remain > header.length + 200) {
+        chunks.push(`${chunk.slice(0, remain)}\n...(该文件内容已按篇幅上限截断)\n`);
+      } else {
+        notes.push(`- ${p}（因篇幅上限未展开内容）`);
+      }
+      used = maxChars;
+      truncated = true;
+      continue;
+    }
+    chunks.push(chunk);
+    used += chunk.length;
+  }
+
+  const summary = `\n[未跟踪新文件] ${paths.length} 个: ${paths.join(', ')}`;
+  const text = [
+    `[未跟踪的新文件 · 含内容] ${paths.length} 个`,
+    ...notes,
+    ...(chunks.length ? chunks : ['(以上文件均未展开内容)']),
+  ].join('\n\n');
+  return { text, summary, truncated };
+}
+
+/**
  * 取当前工作树相对 base 分支的改动 diff(含未提交改动),供 commit-message 闸门使用。
  *
  * ## 为什么需要(2026-09-14)
@@ -452,15 +553,34 @@ export function gitDiffForCommit(
   };
   // 已提交差异(工作树 HEAD vs base)
   const committed = run(['diff', `${b}...HEAD`]);
-  // 未提交改动(工作树 vs HEAD),含新增文件
+  // 未提交改动(工作树 vs HEAD)。⚠️ `git diff` 对**未跟踪文件**无从表达 ——
+  // 它们只能靠下面的 ls-files + renderUntrackedDiff 补上内容。
   const uncommitted = run(['diff', 'HEAD']);
-  const untracked = run(['ls-files', '--others', '--exclude-standard']);
-  const diff = [committed, uncommitted].filter(Boolean).join('\n');
-  const stat = run(['diff', '--stat', `${b}...HEAD`]) || run(['diff', '--stat', 'HEAD']);
+  const untrackedList = run(['ls-files', '--others', '--exclude-standard'])
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean);
+  const tracked = [committed, uncommitted].filter(Boolean).join('\n');
 
-  const full = untracked ? `${diff}\n\n[未跟踪的新文件]\n${untracked}` : diff;
-  const truncated = full.length > maxChars;
-  return { stat, diff: truncated ? full.slice(0, maxChars) + `\n...(diff 已截断,原始长度 ${full.length} 字符)` : full, truncated };
+  // 未跟踪的新文件给**保底预算**(默认一半,maxChars 很小时下限 2000 字符),
+  // 不被 tracked 挤掉 —— 否则「新增文件」这一整类需求会继续因为内容被截掉而静默判负。
+  const untrackedCap =
+    Number(process.env.UNTRACKED_DIFF_MAX_CHARS ?? 0) || Math.max(2000, Math.floor(maxChars / 2));
+  const rendered = renderUntrackedDiff(r, untrackedList, untrackedCap);
+
+  const trackedBudget = Math.max(0, maxChars - rendered.text.length);
+  const trackedTruncated = tracked.length > trackedBudget;
+  const trackedPart = trackedTruncated
+    ? `${tracked.slice(0, trackedBudget)}\n...(已提交/未提交改动已截断,原始长度 ${tracked.length} 字符)`
+    : tracked;
+
+  const full = [trackedPart, rendered.text].filter(Boolean).join('\n\n');
+  const baseStat = run(['diff', '--stat', `${b}...HEAD`]) || run(['diff', '--stat', 'HEAD']);
+  return {
+    stat: `${baseStat}${rendered.summary}`,
+    diff: full,
+    truncated: trackedTruncated || rendered.truncated,
+  };
 }
 
 /**

@@ -278,7 +278,16 @@ export function guardToolCall(
     for (const field of pathFields) {
       const rel = normalizeRepoPath(input[field], repoRoot);
       if (rel === null) {
-        return { decision: 'deny', reason: `目标路径落在仓库之外，越界写入被拒（${toolName}.${field}）` };
+        // 这条是 fail-closed 的拒 —— 日志里必须带上「实际想写哪」，
+        // 否则事后无法区分「agent 真的越界」与「围栏误判」：
+        // 两者在日志里长得一模一样（都只有字段名），而它们的处置完全相反。
+        const raw = input[field];
+        const shown = typeof raw === 'string' ? raw.slice(0, 200) : String(raw);
+        return {
+          decision: 'deny',
+          reason:
+            `目标路径落在仓库之外，越界写入被拒（${toolName}.${field}=${shown}；仓库根=${repoRoot}）`,
+        };
       }
       if (isProtectedPath(rel)) {
         return { decision: 'deny', reason: `受保护路径禁止写入：${rel}（自举期 agent 不得改动流水线自身）` };

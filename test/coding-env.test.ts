@@ -36,6 +36,8 @@ import {
   buildCodingSettings,
   buildCodingEnv,
   describeCodingBackend,
+  describeCodingLimits,
+  codingLimits,
   missingCodingCredentials,
 } from '../src/agents/coding-agent';
 
@@ -189,5 +191,46 @@ describe('missingCodingCredentials —— 显式覆盖必须能解掉「缺凭�
   it('只有 CODING_ANTHROPIC_API_KEY 也算可用', () => {
     process.env.CODING_ANTHROPIC_API_KEY = 'k';
     expect(missingCodingCredentials()).toBe(false);
+  });
+});
+
+/**
+ * 编码步上限（2026-09-19）。
+ *
+ * 起因：一次真实运行被 `Reached maximum budget ($2)` 掐断，而启动自检**没提过**
+ * 有这么一个上限 —— 事后只能靠翻失败理由才知道它存在。而且这个 `$2` 是 CLI 用
+ * 自带价目表算的**名义成本**，接中转站时与实际计费无关，照样能拦腰截断一次正常编码。
+ *
+ * 上限保留（无人值守要有失控保护），但必须**可见且同源**：自检打印它，
+ * SDK 装配 / 步骤超时读的是同一个函数 —— 否则「自检说 30 轮、实际跑 20 轮」
+ * 又会变成一条要翻失败理由才知道的消息。
+ *
+ * 这里用**注入的 env** 而不是改 `process.env`：纯函数可测，且不污染同批次的其它文件。
+ */
+describe('编码步上限 —— 可配置、可打印、单一来源', () => {
+  it('默认值就是实测会被撞到的那三个，不藏着', () => {
+    expect(codingLimits({})).toEqual({ maxTurns: 30, maxBudgetUsd: 2, timeoutMs: 600_000 });
+  });
+
+  it('三个上限都能被 env 覆盖', () => {
+    const l = codingLimits({
+      CODING_MAX_TURNS: '8',
+      CODING_MAX_BUDGET_USD: '12.5',
+      CODING_TIMEOUT_MS: '300000',
+    } as NodeJS.ProcessEnv);
+    expect(l).toEqual({ maxTurns: 8, maxBudgetUsd: 12.5, timeoutMs: 300_000 });
+  });
+
+  it('自检摘要里三个上限都在，且明说成本是名义值', () => {
+    const line = describeCodingLimits({
+      CODING_MAX_TURNS: '30',
+      CODING_MAX_BUDGET_USD: '2',
+      CODING_TIMEOUT_MS: '600000',
+    } as NodeJS.ProcessEnv);
+    expect(line).toContain('maxTurns=30');
+    expect(line).toContain('maxBudgetUsd=$2');
+    expect(line).toContain('timeoutMs=600000'.replace('timeoutMs=', ''));
+    // 这句不能少：否则使用者会以为 $2 是账单，而去调一个无关的数字
+    expect(line).toContain('与实际计费无关');
   });
 });

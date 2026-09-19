@@ -281,6 +281,19 @@ export function runStatus(input: RunStatusInput = {}): RunStatusResult {
       notes.push('该 run 没有 `run:end` 事件 —— 它可能仍在运行，也可能进程中途退出。**未结束不等于成功。**');
     }
 
+    // `skipped` 不是失败（`progress.ts` 把它与 `ok` 一起算作「非失败」），但**单独摆出来
+    // 极易被读成「什么都没做」**。实测：一次完整成功的 run（建分支 → 真写文件 →
+    // 三闸门全过 → 真产生提交）终态就是 `skipped`，因为 stopAfterCommit 在 merge 前收住。
+    // 这里只补一条**事实**（前置步骤的成功计数），不替调用方下「成功」的结论 ——
+    // 「这次改动是否真的落了」要看时间线里的 stage=commit。
+    if (summary && summary.status === 'skipped' && summary.stepsFailed === 0 && summary.stepsDone > 0) {
+      notes.push(
+        `终态 \`skipped\` 表示**按配置提前收住**（典型是 stopAfterCommit：不执行合并关卡），` +
+          `而非失败 —— 此前 ${summary.stepsDone} 个步骤全部成功、0 失败。` +
+          `**它不是「什么都没做」**；编码与提交是否真的完成，看时间线里 stage=commit 的事件。`
+      );
+    }
+
     return { runId, run: summary, runs: [], timeline, pairing, log, notes };
   }
 

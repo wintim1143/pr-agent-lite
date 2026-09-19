@@ -8,6 +8,7 @@ import {
   githubMergePR,
   gitCommit,
   gitDiffForCommit,
+  gitChangedFiles,
   gitChangedFilesWithStatus,
   repoRoot,
 } from '../adapters/github';
@@ -417,6 +418,51 @@ function buildChangeContext(
 }
 
 /**
+ * 编码步「零改动」的判据：通过返回 `null`，不通过返回**失败理由**。
+ *
+ * ## 为什么这条判据必须存在（2026-09-19，真跑暴露）
+ *
+ * 编码步跑完却一个文件都没动时，旧实现**什么都不说**就往下走。后果是流水线带着
+ * 空 diff 流到闸门，闸门只能诚实回答「需求未实现」—— 那句话**是对的**，
+ * 但它把「模型根本没动手」伪装成了「实现不合格」，排障时会往完全错的方向查
+ * （改提示词？改闸门？其实该看的是模型行为）。
+ *
+ * 实测案例：换成某个后端后，模型回了
+ * 「为避免猜测：`greet(name)` 的返回值是否采用简单格式……？」
+ * 然后 `end_turn` 收工 —— 0 次写文件。日志里 coding 步显示 `step:done`，
+ * 一路到闸门才判负，归因完全是错的。
+ *
+ * ## 与「判据归属」的关系（AGENTS.md #8）
+ *
+ * 这里判的**不是需求是否实现**（那是闸门 LLM 的事，程序不越权），
+ * 而是**这一步有没有产出可提交的东西** —— 属于过程事实，程序判定天经地义。
+ * 零改动 = 后续 commit / push 无对象，流水线在这里停住是唯一诚实的选择。
+ *
+ * ## 纯函数
+ *
+ * 无 IO、不读 env —— 变更清单由调用方取好后传入（围栏同款纪律，见 AGENTS.md #7）。
+ *
+ * @param changedFiles 相对 base 的改动文件清单（含未跟踪新文件）
+ * @param base         对比的基线分支名，只用于可读的失败理由
+ * @param resultText   模型这次的实际回复，截断后带进理由里 —— 排障第一眼看的就是它
+ */
+export function codingChangeFailure(
+  changedFiles: readonly string[],
+  base: string,
+  resultText: string
+): string | null {
+  if (changedFiles.length > 0) return null;
+  const reply = String(resultText ?? '').trim();
+  return (
+    `NO_CHANGES@coding: 编码步未产生任何文件改动（工作树与 ${base} 分支均无差异）。` +
+    `常见原因：模型反问/只输出说明而没动手、或工具调用被围栏全部拦下。` +
+    (reply
+      ? `本次回复(${reply.length} 字符): ${reply.slice(0, 300)}`
+      : `本次回复为空 —— 连说明都没有，更像调用本身出了问题。`)
+  );
+}
+
+/**
  * 本次改动的目标基线分支。
  *
  * 2026-09-15（M4）修：原实现把 `'main'` 硬编码在 `buildChangeContext` / 测试脚本里。
@@ -713,7 +759,7 @@ const coding = createStep({
       // 非 ESM 运行时解析会失败 —— 故推迟到真正跑 coding 步时才加载。
       // M6：移到 `try` 内 —— 动态 import 自身也会失败，而它是**持锁期间**的抛错点，
       // 放在 try 外就成了一条「不会被 catch 覆盖」的路径（同 M5 修凭据检查的那个理由）。
-      const { getCodingAgent, missingCodingCredentials, getRepoRoot } = await import('../agents/coding-agent.js');
+      const { getCodingAgent, missingCodingCredentials, getRepoRoot, codingLimits } = await import('../agents/coding-agent.js');
       if (missingCodingCredentials()) {
         // 用 error 而非 warn:走到这里意味着「编码这个核心能力根本没执行」,静默降级会让
         // 后续 test/review/commit 全部基于空结果跑完,表面上全绿实则什么都没做。
@@ -733,13 +779,15 @@ const coding = createStep({
       // M6-2：把 runId 一路带到 PreToolUse hook，让 `guard:deny` 也归得到 run
       // （红线生效的证据若归不到 run，多 run 交错时就无法回答「哪一次被拦了」）。
       const agent = await getCodingAgent(root, inputData.target, runId);
-      const timeoutMs = Number(process.env.CODING_TIMEOUT_MS ?? 600_000);
+      const timeoutMs = codingLimits().timeoutMs;
       const prompt =
         `你在一个 git 仓库的 feature 分支 \`${inputData.branch}\` 上。请实现以下 issue 对应的代码改动:\n\n` +
         `**标题**: ${inputData.issueTitle}\n` +
         (inputData.issueBody ? `**描述**:\n${inputData.issueBody}\n` : '') +
         '\n要求:\n- 直接修改仓库中的文件(不要只输出代码片段)\n' +
         '- 保持代码风格一致\n- 完成后简要说明你改了哪些文件、为什么\n' +
+        '- **无人值守**:没有人能回答你的提问。不要反问、不要请求确认、不要只给方案 ——\n' +
+        '  信息不足时按最合理的默认做掉,并在结尾说明你假设了什么。\n' +
         '- 不要 git commit(后续 commit 步会提交)';
 
       // 关键观测点(2026-09-14):编码是唯一「分钟级静默阻塞」的步骤。此处显式打出
@@ -780,7 +828,13 @@ const coding = createStep({
         resultLen: String(res.text ?? '').length,
         usage: normalizeUsage(toV3Usage(usageOf(res))),
       });
-      p.done({ durationMs: Date.now() - t0 });
+      // fail-closed：跑完却零改动必须**在这一步**说清楚，别让它带着空 diff 流到闸门 ——
+      // 否则闸门的「需求未实现」会把「模型根本没动手」伪装成「实现不合格」。
+      const changedNow = gitChangedFiles(baseBranch(inputData.target), root, inputData.target);
+      const noChange = codingChangeFailure(changedNow, baseBranch(inputData.target), String(res.text ?? ''));
+      if (noChange) throw new StepFailError(noChange, { changedFiles: 0 });
+
+      p.done({ durationMs: Date.now() - t0, changedFiles: changedNow.length });
       return { ...inputData, codingResult: res.text ?? '(no output)' };
     } catch (e) {
       // 2026-09-07 改:同上 —— 编码失败后 test/review/commit 失去意义,不降级、不占位,直接终止。

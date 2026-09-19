@@ -31,7 +31,7 @@
  */
 import { logLlmConfig, missingLlmConfig } from './config.js';
 import { describeActiveLlm } from './llm/chat.js';
-import { describeCodingBackend } from './agents/coding-agent.js';
+import { describeCodingBackend, describeCodingLimits } from './agents/coding-agent.js';
 import { registrySummary } from './adapters/repo-registry.js';
 import { stateDbPath } from './adapters/state-db.js';
 import { logFilePath } from './log-store.js';
@@ -67,6 +67,9 @@ export function logStartupSelfCheck(): void {
 
   // —— 编码链（Claude Code CLI，Anthropic 协议）——
   note('CODING', `编码链 ${describeCodingBackend()}`);
+  // 上限必须与 SDK 装配读同一处 —— 否则「自检说 30 轮、实际跑 20 轮」这类分叉
+  // 又会变成一条要翻失败理由才知道的消息（2026-09-19 真被 $2 上限掐断过一次）。
+  note('CODING', `编码步上限 ${describeCodingLimits()}`);
 
   // —— 运行期落点（路径全部来自配置，不写死）——
   note('paths', `日志=${logFilePath()} 状态库=${stateDbPath()}`);
