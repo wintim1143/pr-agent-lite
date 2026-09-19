@@ -66,17 +66,23 @@
 - 🆕 **必须新写 ~520–820 行**：顺序执行器 / `chat()` 直连 / MCP 工具面 / SSE 状态页 / 启动自检。**同步挂钩第一版不需要**（无上游），接真仓库时回来（~80 行）。
 - **框架渗透点仅 13 处**，散在 9 个文件，其中 4 个是零业务逻辑的装配层。
 
-## 会静默失败的三个点（最重要）
+## 会静默失败的点（最重要）
 
 1. **`git fetch` 缺失**（**前提：常驻副本有上游远端**）→ 分支从**过期基线**建出、**不报错**（`github.ts:375-394` 用本地 base ref；`countAhead` `:403` 同源）。**第一版不触发；接真仓库立刻生效。**
 2. **usage 形状退化** → 必须自建 V3 形状 `{inputTokens:{total,noCache,cacheRead,cacheWrite}, outputTokens:{total,text}}`；退化为 `null` 而 `null` 是设计内正确值 ⇒ **不报错**，成本报表永远「无量」。验证要**人工比对 SDK 原始 `result` 消息与落盘值**。
 3. **模型名幻觉** → 「看着在跑但模型不对」。启动自检必须打印实际生效的 provider / baseURL / model，**即使端点不通也打印**。
+4. **编码链显式覆盖被 settings 层压掉**（2026-09-19 实测定位 + 已修）→ `CODING_ANTHROPIC_*` **只注入子进程 env 时完全不生效**：CLI 读 `~/.claude/settings.json` 的 `env` 块，而**那一层压进程环境**。症状同 #3（看着在跑但打到别的端点），且**无报错指向配置层**。修法：**同时**给 `Options.settings`（flag 层，"highest priority among user-controlled settings"）；且**未显式配置时不得下发 settings**（空 `{env:{}}` 会盖掉用户配好的端点）。单测 `test/coding-env.test.ts`。见 AGENTS.md #23。
+
+> **四项的实测状态（2026-09-19）**：②usage 未退化（端到端一轮 4 次调用 / 392 in / 176 out，`run_cost` 与日志逐条相加一致、`unknownUsage=0`）；③启动自检无条件打印已实现；④已修且有单测守住；①仍待接真仓库时验。
 
 ## 其他关键事实
 
 - `@anthropic-ai/claude-agent-sdk` **已在依赖里**；`@libsql/client` 是 Turso 官方驱动（**不是框架组件**）；`state-db.ts` 那 5 处 `@mastra/libsql` **全是注释**。
 - ⚠️ **`coding-agent.ts` 325 行的主体是安全设计**（fail-closed 围栏 `:192-260`、环境注入、凭据检测、受保护分支解析、bypass + 工具黑名单）—— **整块保留，勿重写**。
 - **心跳已存在**（`dev-workflow.ts:745-760`，30s，环境变量可调，0 = 关闭）；缺口只是抽成可复用 + 覆盖测试步 + 扩 payload。
+- 🧪 **`scripts/stub-endpoint.cjs` —— 确定性双协议假端点**（Anthropic `/v1/messages` 走编码链、OpenAI `/chat/completions` 走闸门链）。**这是把「管道通不通」与「端点通不通」拆开的关键杠杆**：真端点不可用（区域封锁 / 订阅失效）时仍能完整验链路。也能下发一条该被拦的命令来**验证围栏真的挂上了**（`--tool Bash --command 'rm -rf <哨兵>'` → 看 `guard:deny` + 哨兵存活）。
+- ✅ **围栏 hook 在官方 SDK 下确认有效**（2026-09-19 实测）：`PreToolUse` hook 拦截生效、`guard:deny` 事件归属到 run。这条原本列在「已知风险」里，现已关闭。
+- ✅ **M1+M2+M3 代码已完成并提交**（`f63d6ed` / `744e658` / `0f9e0b9` / `c4dc1ed`）。口径：16 套件 / 257 声明 / 326 执行，全绿。
 - **测试基线**：参考副本 16 文件 / **222 声明 / 243 执行**（断言必须用「执行数」口径，9 处 `it.each` 多出 21 条）；新项目 **13 文件 + `jest.setup.ts` / 206 / 227**，只删 16 条。⚠️ **「去掉框架就能删掉大部分测试」不成立** —— 不借鉴的 1,337 行只对应约 12 条测试。第一版**不删 PR 相关测试**（代码照搬不接线）。
 - **测试三个陷阱**：① 状态库路径的环境变量名原带框架前缀（**副本里已中性化为 `APP_DB_PATH`**，新项目按自己命名再收口一次）② `jest.setup.ts` **必须保留**（防单测污染生产日志）③ 被测试直接 import 的导出名要逐个确认没变（`runGate` / `ContextSchema` / `resolveProtectedBranchNames`）。
 - **stage 埋点真位置** `progress.ts:355`（`stageStart`）/ `:406`（`runEnd`）；`:73-95` 是阶段名**闭集**（八步），照它找埋点会看错整段。
