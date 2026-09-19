@@ -72,8 +72,13 @@
 2. **usage 形状退化** → 必须自建 V3 形状 `{inputTokens:{total,noCache,cacheRead,cacheWrite}, outputTokens:{total,text}}`；退化为 `null` 而 `null` 是设计内正确值 ⇒ **不报错**，成本报表永远「无量」。验证要**人工比对 SDK 原始 `result` 消息与落盘值**。
 3. **模型名幻觉** → 「看着在跑但模型不对」。启动自检必须打印实际生效的 provider / baseURL / model，**即使端点不通也打印**。
 4. **编码链显式覆盖被 settings 层压掉**（2026-09-19 实测定位 + 已修）→ `CODING_ANTHROPIC_*` **只注入子进程 env 时完全不生效**：CLI 读 `~/.claude/settings.json` 的 `env` 块，而**那一层压进程环境**。症状同 #3（看着在跑但打到别的端点），且**无报错指向配置层**。修法：**同时**给 `Options.settings`（flag 层，"highest priority among user-controlled settings"）；且**未显式配置时不得下发 settings**（空 `{env:{}}` 会盖掉用户配好的端点）。单测 `test/coding-env.test.ts`。见 AGENTS.md #23。
+5. **未跟踪新文件的内容从不进 diff**（2026-09-19 真端点首跑暴露 + 已修）→ `git diff` 对未跟踪文件无从表达，而 `git add -A` 在**闸门之后**。症状 = **闸门恒判负**（需求「新增 X 文件」永远过不去 —— 正是核心用例）。修法：`renderUntrackedDiff` 渲染内容 + **保底预算**（不被大 diff 挤掉）。单测 `test/diff-untracked.test.ts`。见 AGENTS.md #24。
+6. **编码步零改动照样 `step:done`**（同上 + 已修）→ 模型反问不动手时，闸门才说「需求未实现」，把「模型没动手」伪装成「实现不合格」——**归因错位**。修法：`codingChangeFailure` 纯函数**当场**判负 + 提示词写明无人值守/不要反问。单测 `test/coding-no-change.test.ts`。见 AGENTS.md #25。
+7. **编码步上限从未被披露**（同上 + 已修）→ 被 `Reached maximum budget ($2)` 在 249s 掐断，自检却没提过；且该值是 CLI 算的**名义成本**，接中转站时**与实付无关**。修法：`codingLimits()` 单一来源，自检 / SDK 装配 / 步骤超时**三处同读**并打印。见 AGENTS.md #26。
 
-> **四项的实测状态（2026-09-19）**：②usage 未退化（端到端一轮 4 次调用 / 392 in / 176 out，`run_cost` 与日志逐条相加一致、`unknownUsage=0`）；③启动自检无条件打印已实现；④已修且有单测守住；①仍待接真仓库时验。
+> **七项的实测状态（2026-09-19）**：②usage 未退化（真端点一轮 4 次调用 / 1,649,667 in / 8,146 out，`run_cost` 与日志逐条相加一致、`unknownUsage=0`）；③启动自检无条件打印已实现；④⑤⑥⑦ 已修且有单测守住，且**都在真端点首跑中被实际撞到过**；① 仍待接真仓库时验。
+>
+> **结论**：「会静默失败」的清单**只会变长** —— 前四项是照搬/改造期预判出来的，后三项全是**真跑一次才暴露**的。**每跑一次真链路，就去清单里加一条。**
 
 ## 其他关键事实
 
@@ -82,8 +87,12 @@
 - **心跳已存在**（`dev-workflow.ts:745-760`，30s，环境变量可调，0 = 关闭）；缺口只是抽成可复用 + 覆盖测试步 + 扩 payload。
 - 🧪 **`scripts/stub-endpoint.cjs` —— 确定性双协议假端点**（Anthropic `/v1/messages` 走编码链、OpenAI `/chat/completions` 走闸门链）。**这是把「管道通不通」与「端点通不通」拆开的关键杠杆**：真端点不可用（区域封锁 / 订阅失效）时仍能完整验链路。也能下发一条该被拦的命令来**验证围栏真的挂上了**（`--tool Bash --command 'rm -rf <哨兵>'` → 看 `guard:deny` + 哨兵存活）。
 - ✅ **围栏 hook 在官方 SDK 下确认有效**（2026-09-19 实测）：`PreToolUse` hook 拦截生效、`guard:deny` 事件归属到 run。这条原本列在「已知风险」里，现已关闭。
-- ✅ **M1+M2+M3 代码已完成并提交**（`f63d6ed` / `744e658` / `0f9e0b9` / `c4dc1ed`）。口径：16 套件 / 257 声明 / 326 执行，全绿。
-- **测试基线**：参考副本 16 文件 / **222 声明 / 243 执行**（断言必须用「执行数」口径，9 处 `it.each` 多出 21 条）；新项目 **13 文件 + `jest.setup.ts` / 206 / 227**，只删 16 条。⚠️ **「去掉框架就能删掉大部分测试」不成立** —— 不借鉴的 1,337 行只对应约 12 条测试。第一版**不删 PR 相关测试**（代码照搬不接线）。
+- ✅ **M1+M2+M3 代码已完成并提交**（`f63d6ed` / `744e658` / `0f9e0b9` / `c4dc1ed` / `a47341b`）。口径：**18 套件 / 278 声明 / 347 执行**，全绿。
+- ✅ **真端点整链已验通（2026-09-19）**：编码链走用户本机 Claude Code CLI 自己的配置，闸门链走 OpenAI 兼容直连。逐项：建分支 → CLI **真写文件** → test `passed=true` → review `approve` → **真产生提交**；base 分支未被改动。经 MCP `dev_start`（2ms 返回）触发同样全绿（`stepsDone=6/stepsFailed=0`）。**唯一入口已验。**
+- ⚠️ **两条链的端点可以不同，且必须分别配**：闸门链**不能用本机 cc-switch 代理端口** —— 它只答 Anthropic 形状（`/v1/messages`），`/v1/chat/completions` 回「未配置供应商」（`{"error":{"message":"未配置供应商","type":"proxy_error"}}`）。闸门链要用服务商**官方 OpenAI 兼容端点**（DeepSeek 官方 baseURL **不带 `/v1`**）。
+- ⚠️ **编码 CLI 会加载用户自己的 `~/.claude/settings.json`**：`enabledPlugins` / `hooks` 都在生效范围内（实测 agent 额外产出一份 `docs/superpowers/plans/…md`）。只覆盖 `env` 层不够 —— 完全隔离要用 `settingSources: []`，但那会一并关掉用户凭据通路。**待定项 Q-L。**
+- ⚠️ **模型行为差异是真实的**：同一句需求，有的后端**反问**而不是动手（`num_turns=9`、0 次写文件），有的 138s 干完、有的要 376s。**提示词里的「无人值守、不要反问」是必需项**，不是客套。编码步超时与预算上限要按**最慢的后端**留余量。
+- **测试基线**：参考副本 16 文件 / **222 声明 / 291 执行**（断言必须用「执行数」口径，`it.each` 展开多出 69 条）；副本里留 13 文件 + `jest.setup.ts` = **218 / 287**；新项目 **18 文件 + `jest.setup.ts` / 278 / 347**（相对副本基线 +60），删 16 条、新增 72 条。⚠️ **「去掉框架就能删掉大部分测试」不成立** —— 不借鉴的 1,337 行只对应约 12 条测试。第一版**不删 PR 相关测试**（代码照搬不接线）。
 - **测试三个陷阱**：① 状态库路径的环境变量名原带框架前缀（**副本里已中性化为 `APP_DB_PATH`**，新项目按自己命名再收口一次）② `jest.setup.ts` **必须保留**（防单测污染生产日志）③ 被测试直接 import 的导出名要逐个确认没变（`runGate` / `ContextSchema` / `resolveProtectedBranchNames`）。
 - **stage 埋点真位置** `progress.ts:355`（`stageStart`）/ `:406`（`runEnd`）；`:73-95` 是阶段名**闭集**（八步），照它找埋点会看错整段。
 - **`repo-registry` 的 `localPath` 语义不变** —— 服务器上的固定 clone 目录就是它；但「target 里不得含机器路径」这条约束更强，必须保留。
@@ -136,12 +145,17 @@
   - node_modules = **577M**；磁盘 **40G / 已用 13G / 余 26G（33%）**。服务器实测版本：node **v22.22.3** / npm **10.9.8** / git **2.43.0** / python **3.12.3**（⚠️ 文档写 python 3.13，与服务器不符；项目是 node，影响低）。
   - ⚠️ 探针在 `/tmp` 一次性目录里做的，**残留已清理**；`~/code` 未受影响。
 
+- 🆕 **本机 Claude Code 通道已恢复（2026-09-19）**：早前 403「An active OpenCode Go subscription is required」的根因是 cc-switch 选中的 provider 订阅失效；用户换配置后本机 `claude -p` 正常（`is_error:false`）。**编码链由 CLI 自己读 `~/.claude/settings.json`**（→ cc-switch 本机代理 `127.0.0.1:15721` → 服务商），项目侧**不设** `CODING_ANTHROPIC_*` 即是生产路径。
+- ⚠️ **本机 cc-switch 代理只答 Anthropic 形状**：`15721/v1/chat/completions` 回 `{"error":{"message":"未配置供应商","type":"proxy_error"}}`，`/v1/models` 回 `{"models":[]}`；**闸门链（OpenAI 形状）必须另找端点**。
+- ⚠️ **provider 名单可读**：`~/.cc-switch/cc-switch.db`（sqlite，`providers` 表 `settings_config` = JSON，含 `env` 块）。**只读查询、脱敏打印** —— 是本机凭据现状最快的真相源。
+
 ## 仍未决
 
 Q-D 第一版使用者范围（卡 M3）· Q-G 真实工期（需投入假设，否则只给 S/M/L）。
 **Q-H 「服务器 Hermes 凭据能否与编码侧共用」实际已被 Q-J 绕过 —— 编码侧走 DeepSeek 独立 key，与 Hermes 的 provider 无关 ⇒ 答案 = 不共用、也不需要。可从「卡 G」降为已结清（四份文档里还挂着，待改）。**
 **Q-I 接真靶子仓库是哪些** · **Q-K 代码平台写通道的落点**（服务端 REST Git Data API（**不需 key**）/ 开发机代提交）—— **两者都移出第一版，第二版再定**。
+**Q-L 编码 CLI 要不要与用户 `~/.claude/settings.json` 隔离**（卡 M3 收口）：实测 `enabledPlugins` / `hooks` 都在生效范围内（agent 会额外产出计划文档、也会跑用户自己的 PreToolUse hook）。当前只覆盖 `env` 层；完全隔离要传 `settingSources: []`，但那会一并关掉用户凭据通路 —— 得先定凭据从哪来。
 
-**待办（本机）**：仓库有 **8 项未提交**（4 份文档改动 + `scripts/` 3 脚本 + `.workbuddy/skills/` 2 skill + `2026-09-19.md`）。**M1 开工前应有一个干净基线**，否则搬运 diff 会和文档改动混在一起。
+**待办（本机）**：✅ 早前那 8 项未提交已随 M1/M2/M3 提交清空；当前工作树干净（最新 `a47341b`）。**下一步是服务器侧**：部署 + M1 出口验收（必须在服务器上跑）+ Hermes 侧注册 MCP 工具。
 
 **已结清（2026-09-19）**：① 代码与靶子仓库怎么进服务器 —— **本项目 scp 投递；靶子侧用服务器自建本地仓**（D3/D7）；② fetch 相关文档口径 —— 4 份文档已改完，`check-docs.py` 退出 0；③ 第一版产出边界 —— **不产出 PR**（D8）；④ **Q-J 服务器到 LLM 端点的出口** —— DeepSeek 的 Anthropic 兼容端点，真 key 实测调通（HTTP 200 + `claude -p` 返回 PONG）。
