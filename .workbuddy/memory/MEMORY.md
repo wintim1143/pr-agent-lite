@@ -105,7 +105,7 @@
 - **M0 无本项目代码**（飞书由 Hermes 打通）⇒「先飞书」**不提供早期信心**，早期可见成果在 M2。
 - **M0 现在只要**：scp 通道可用 + **服务器本地演练仓就位**（第一版不需要真靶子仓库，Q-I 移出 M0）。
   - ✅ **验收 1 / 2 已过（2026-09-19 实测）**：scp 通道可用；服务器用户目录下已建**本地演练仓**（自建 git 仓、无上游），建分支 → claude 写代码 → 拓扑层提交 → `countAhead` 返回 1，全绿。仓库级 git 身份显式配置。
-  - ⏳ **仍缺（2026-09-19 12:00 逐项实测核对）**：① **飞书通道**（验收 3）—— 三重证据确认**零凭据**：`~/.hermes/.env` 里 grep feishu|lark **无输出**、`channel_directory.platforms.feishu = 0`（只有 `weixin: 1`）、`config.yaml` 无 feishu 段；**唯一带外部审核等待的项，仍未动**。② **环境仓库软链**（验收 4）—— `~/.hermes/skills/` 下 `find -type l` 计数 **0**，全是实体目录，**方案未定**。③ **项目部署目录未定** —— M1 出口验收 1 要在服务器 `npm ci`，得先有落点；⚠️ **`~/code` 是被测仓，本项目代码不能混进去**。④ **本项目进程守护方式未定** —— 但有现成参照 `systemctl --user` 的 `hermes-gateway.service`（含 `.d/` 覆盖目录）。⑤ **Q-D / Q-H 收口**（Q-H 见下，实际已被 Q-J 绕过）。
+  - ⏳ **仍缺（2026-09-19 12:00 逐项实测核对）**：① ✅ **飞书通道**（验收 3）**已全通过（2026-09-19 23:52）** —— 凭据落盘 + gateway 连上 + 从飞书发消息收到回复，实况见下方环境段。② **环境仓库软链**（验收 4）—— `~/.hermes/skills/` 下 `find -type l` 计数 **0**，全是实体目录，**方案未定**。③ **项目部署目录未定** —— M1 出口验收 1 要在服务器 `npm ci`，得先有落点；⚠️ **`~/code` 是被测仓，本项目代码不能混进去**。④ **本项目进程守护方式未定** —— 但有现成参照 `systemctl --user` 的 `hermes-gateway.service`（含 `.d/` 覆盖目录）。⑤ **Q-D / Q-H 收口**（Q-H 见下，实际已被 Q-J 绕过）。
 - **M2 刻意零 LLM 依赖** ⇒ 与端点风险彻底解耦，端点未解决也能交付。**第一版 M2 无同步挂钩**。
 - **G 是门禁不是里程碑**（只有过 / 不过，无交付物）。
 - **M3 是唯一不可压缩段**；第一版终点是「本地提交 + 测试事实」，**不产出 PR**。
@@ -118,9 +118,14 @@
 - 本机**没装 Hermes** ⇒ 环境侧改动无法本地预演。
 - 🔴 **Hermes 侧实况（2026-09-19 23:26 只读探测）** —— **文档里 M0 标 ✅ 与实况不符**：
   - Hermes **v0.15.2**，gateway **在跑**（systemd 托管，PID 355985，2026-09-18 22:37 起）。
-  - **已连通平台 = `lightclawbot`（插件）+ `weixin`（iLink）**，日志原话 `Gateway running with 2 platform(s)`。
-  - ❌ **飞书通道未打通**：`channel_directory.json` 的 `feishu` 为空数组；`.env` 26 个键里**零个** feishu/lark 键；`~/.hermes/plugins/` 下只有 `lightclawbot`。
-    ⇒ **M0 出口验收第 3 条「飞书群里对 Hermes 说一句话」不成立**。当前可对话的是微信与 lightclawbot。
+  - **已连通平台 = `lightclawbot`（插件）+ `weixin`（iLink）+ `feishu`**，日志原话 `Gateway running with 3 platform(s)`（2026-09-19 23:49 重启后）。
+  - ✅ **飞书通道已打通（2026-09-19 23:48）**：用户扫码完成授权后，用 Hermes 自己的 `save_env_value` 写入 7 个 `FEISHU_*` 键（`APP_ID` / `APP_SECRET` / `DOMAIN=feishu` / `CONNECTION_MODE=websocket` / `ALLOW_ALL_USERS=false` / `ALLOWED_USERS=<用户本人 open_id>` / `GROUP_POLICY=open`）；重启 gateway 后日志出现 `✓ feishu connected` + `[Lark] connected to wss://msg-frontier.feishu.cn/ws/v2`。机器人名「郭的智能助手」。
+    - 🔴 **设备码流程只扫码不够** —— 必须在页面上再点一次「确认 / 同意」，且 600s 过期即作废（第一次失败正是这样超时的）。服务端 `_poll_registration` 超时后要**重新 `_begin_registration`** 才能续期。
+    - ⚠️ **白名单是发起注册那个账号的 open_id** —— 换账号 / 换群会被挡。
+    - ⚠️ Hermes 的 venv 在 **`~/.hermes/hermes-agent/venv/bin/python3`**（**不是 `.venv`**）；系统 `python3` **没有 `qrcode`**，写 Hermes 相关脚本必须用 venv 那个解释器。`hermes-gateway` 是 **`systemctl --user`** 服务。
+  - ✅ **M0 出口验收第 3 条已通过（2026-09-19 23:52）** —— 用户从飞书发「你好」，全链路日志闭环：`Inbound dm message received` → `inbound message: platform=feishu` → `response ready … time=22.9s api_calls=1 response=46 chars` → `[Feishu] Sending response`。发送者 open_id 与 `FEISHU_ALLOWED_USERS` 一致 ⇒ **白名单闸门在真链路上验证有效**。
+  - 🔴 **Hermes 侧 LLM = 第三方聚合端点**（`provider=custom` / `base_url=https://apihub.agnes-ai.com/v1` / `model=agnes-2.0-flash`），**与编码侧的 DeepSeek 完全无关** ⇒ **Q-H 的实测结论：不共用、也不需要**。⚠️ 该端点**免费额度会限流**（`429 You've reached the API rate limit for free users`），辅助调用已出现过（回落链：openrouter → nous → 本地 custom）；**主调用若撞限流，飞书侧会静默无响应**。另：该端点不答 models 探测，Hermes 回落 256k 上下文。
+  - ⚠️ **飞书链路延迟基线 ≈ 23s**（一句话往返）—— M3 编码链是分钟级，**Hermes 侧必须「立刻回执 + 后台推进」**（`dev_start` 2ms 返回正是为此）。
   - ❌ **MCP 未注册**：`hermes mcp list` → `No MCP servers configured`。
   - ❌ **项目代码未投递**：`~/pr-agent-lite` / `~/code/pr-agent-lite` / `~/apps/…` / `/opt/…` 全不存在。
   - ✅ **`~/code` = 演练仓**：分支 `feature/drill`，提交 `96e5849 feat: add calc.js (agent-produced)`，含 `.claude/`（CLI 真在那里跑过）。**这就是用户说的「code 文件夹」。**
