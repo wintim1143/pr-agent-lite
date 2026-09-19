@@ -38,6 +38,7 @@ import {
   describeCodingBackend,
   describeCodingLimits,
   codingLimits,
+  DEFAULT_MAX_BUDGET_USD,
   missingCodingCredentials,
 } from '../src/agents/coding-agent';
 
@@ -209,7 +210,11 @@ describe('missingCodingCredentials —— 显式覆盖必须能解掉「缺凭�
  */
 describe('编码步上限 —— 可配置、可打印、单一来源', () => {
   it('默认值就是实测会被撞到的那三个，不藏着', () => {
-    expect(codingLimits({})).toEqual({ maxTurns: 30, maxBudgetUsd: 2, timeoutMs: 600_000 });
+    expect(codingLimits({})).toEqual({
+      maxTurns: 30,
+      maxBudgetUsd: DEFAULT_MAX_BUDGET_USD,
+      timeoutMs: 600_000,
+    });
   });
 
   it('三个上限都能被 env 覆盖', () => {
@@ -232,5 +237,41 @@ describe('编码步上限 —— 可配置、可打印、单一来源', () => {
     expect(line).toContain('timeoutMs=600000'.replace('timeoutMs=', ''));
     // 这句不能少：否则使用者会以为 $2 是账单，而去调一个无关的数字
     expect(line).toContain('与实际计费无关');
+  });
+
+  /**
+   * 「显式关闭」这条来自 2026-09-19 的一个实测判断：
+   *
+   * 编码链接中转站时，CLI 是用**自带价目表**算这个名义成本的 —— 跟实际计费无关。
+   * 那种情况下调这个数字等于调一个假旋钮，**关掉反而是诚实的**。
+   *
+   * 关键是不能把「关闭」表达成一个看起来像金额的值：传 `0` 给 SDK 会被当成
+   * 「预算 0 美元」而立刻全挂，所以这里约定 `0` / 负数 = 不下发该字段。
+   */
+  it('写 0 / 负数 = 显式关闭名义上限，而不是「0 美元预算」', () => {
+    expect(codingLimits({ CODING_MAX_BUDGET_USD: '0' } as NodeJS.ProcessEnv).maxBudgetUsd).toBeNull();
+    expect(codingLimits({ CODING_MAX_BUDGET_USD: '-1' } as NodeJS.ProcessEnv).maxBudgetUsd).toBeNull();
+
+    const line = describeCodingLimits({ CODING_MAX_BUDGET_USD: '0' } as NodeJS.ProcessEnv);
+    expect(line).toContain('已关闭');
+    // 不能打出一个像金额的 0，否则读日志的人会以为上限是 $0
+    expect(line).not.toContain('maxBudgetUsd=$');
+  });
+
+  it('上限值写坏了回落默认值，绝不把 NaN 传给 SDK', () => {
+    const fallback = {
+      maxTurns: 30,
+      maxBudgetUsd: DEFAULT_MAX_BUDGET_USD,
+      timeoutMs: 600_000,
+    };
+    // 空白 / 空串（会被 .env 解析成空值）
+    expect(codingLimits({ CODING_MAX_BUDGET_USD: '   ' } as NodeJS.ProcessEnv).maxBudgetUsd)
+      .toBe(DEFAULT_MAX_BUDGET_USD);
+    // 纯文本
+    expect(codingLimits({ CODING_MAX_BUDGET_USD: 'abc' } as NodeJS.ProcessEnv).maxBudgetUsd)
+      .toBe(DEFAULT_MAX_BUDGET_USD);
+    // NaN 一旦传下去，SDK 那边就是「预算立即超限」——这种失效不报错，只能在这里拦住
+    expect(codingLimits({ CODING_MAX_TURNS: 'x', CODING_TIMEOUT_MS: 'x' } as NodeJS.ProcessEnv))
+      .toEqual(fallback);
   });
 });

@@ -827,6 +827,14 @@ const coding = createStep({
         durationMs: Date.now() - t0,
         resultLen: String(res.text ?? '').length,
         usage: normalizeUsage(toV3Usage(usageOf(res))),
+        // 名义成本与轮次（2026-09-19 补）：这是 `CODING_MAX_BUDGET_USD` / `_MAX_TURNS`
+        // 唯二的调参依据。不落盘的话，「被上限掐断」就只能靠翻失败理由反推，
+        // 而调默认值也只能靠猜 —— 一次小任务就吃 1.65M input tokens 这件事，
+        // 正是事后从这条记录里才看出来的。
+        // ⚠️ `costUsd` 是 CLI 按**自带价目表**算的名义值，编码链接中转站时与实际计费无关；
+        // 它只回答「离上限还有多远」，不是账单。拿不到时记 null（不是 0）。
+        costUsd: typeof res.costUsd === 'number' ? res.costUsd : null,
+        numTurns: typeof res.numTurns === 'number' ? res.numTurns : null,
       });
       // fail-closed：跑完却零改动必须**在这一步**说清楚，别让它带着空 diff 流到闸门 ——
       // 否则闸门的「需求未实现」会把「模型根本没动手」伪装成「实现不合格」。

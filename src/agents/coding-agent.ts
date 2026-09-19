@@ -273,6 +273,9 @@ export function resolveProtectedBranchNames(target?: RepoTarget): string[] {
   return Array.from(new Set(names));
 }
 
+/** 默认的名义成本上限（美元）。取值依据见 `codingLimits` 的「为什么默认不是 2」。 */
+export const DEFAULT_MAX_BUDGET_USD = 50;
+
 /**
  * 编码步的运行上限 —— **启动自检、SDK 装配、步骤超时三处读的都是这一个函数**。
  *
@@ -290,6 +293,21 @@ export function resolveProtectedBranchNames(target?: RepoTarget): string[] {
  * 所以上限本身保留（无人值守必须有失控保护），但要**变得可见**：
  * 自检打印它、单测钉住它、`.env.example` 说明它。
  *
+ * ## 为什么默认不是 2（2026-09-19 实测取证）
+ *
+ * 同一天用真端点跑通的那轮，**编码步单步就吃了 1,646,963 input tokens**
+ * （落盘记录 `llm:done` 的 `usage` 可查）—— 而那次的任务只是「新增一个小文件」。
+ * 按官方价目表折算，这个量级的名义成本已经越过 $2 了。也就是说 `$2` 会掐断
+ * **正常任务**，而不只是失控任务。
+ *
+ * 因此默认抬到 50（保留失控保护，同时给正常任务留余量），并且：
+ * - 显式写 `0` / 负数 = **关闭**：此时**不下发**该选项（SDK 的 `maxBudgetUsd` 是
+ *   可选字段，省略即无上限）。编码链接中转站时这个数字与实际计费无关，
+ *   调它等于调一个假旋钮 —— 关掉反而是诚实的。
+ * - 值写坏了（非数字）→ **回落默认值**，绝不把 `NaN` 传给 SDK。
+ * - 每次编码的**真实名义成本**会落进 `llm:done` 的 `costUsd`（取自 CLI 的
+ *   `total_cost_usd`），所以这个旋钮可以按证据调，不用猜。
+ *
  * ## 纯函数
  *
  * env 可注入，无 IO —— 便于单测，也避免「自检读一处、装配读另一处」的分叉。
@@ -297,27 +315,48 @@ export function resolveProtectedBranchNames(target?: RepoTarget): string[] {
 export function codingLimits(env: NodeJS.ProcessEnv = process.env): {
   /** SDK 的轮次上限 */
   maxTurns: number;
-  /** SDK 的名义成本上限（美元）；接中转站时与实际计费无关 */
-  maxBudgetUsd: number;
+  /** SDK 的名义成本上限（美元）；接中转站时与实际计费无关。`null` = 显式关闭（不下发该选项） */
+  maxBudgetUsd: number | null;
   /** 本项目对编码步自身的超时兜底（毫秒） */
   timeoutMs: number;
 } {
+  // 非正数 / 非有限数一律回落默认值：把 NaN 静默传给 SDK 是「不报错的失效」。
+  const positive = (raw: string | undefined, fallback: number): number => {
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  };
+
+  const rawBudget = env.CODING_MAX_BUDGET_USD?.trim();
+  let maxBudgetUsd: number | null;
+  if (rawBudget === undefined || rawBudget === '') {
+    maxBudgetUsd = DEFAULT_MAX_BUDGET_USD;
+  } else {
+    const n = Number(rawBudget);
+    if (Number.isFinite(n) && n <= 0) maxBudgetUsd = null; // 显式关闭
+    else if (Number.isFinite(n)) maxBudgetUsd = n;
+    else maxBudgetUsd = DEFAULT_MAX_BUDGET_USD; // 写坏了 → 回落，不传 NaN
+  }
+
   return {
-    maxTurns: Number(env.CODING_MAX_TURNS ?? 30),
-    maxBudgetUsd: Number(env.CODING_MAX_BUDGET_USD ?? 2),
-    timeoutMs: Number(env.CODING_TIMEOUT_MS ?? 600_000),
+    maxTurns: positive(env.CODING_MAX_TURNS, 30),
+    maxBudgetUsd,
+    timeoutMs: positive(env.CODING_TIMEOUT_MS, 600_000),
   };
 }
 
 /**
  * 供启动自检打印的一行上限摘要（不含密钥）。
  *
- * 三个值一起give出，因为「被掐断」的原因只可能是其中之一，
+ * 三个值一起给出，因为「被掐断」的原因只可能是其中之一，
  * 而排障时最贵的正是「不知道有这三个上限」。
  */
 export function describeCodingLimits(env: NodeJS.ProcessEnv = process.env): string {
   const l = codingLimits(env);
-  return `maxTurns=${l.maxTurns} maxBudgetUsd=$${l.maxBudgetUsd}(CLI 名义成本,接中转站时与实际计费无关) 步骤超时=${l.timeoutMs}ms`;
+  const budget =
+    l.maxBudgetUsd === null
+      ? 'maxBudgetUsd=已关闭(未下发该上限)'
+      : `maxBudgetUsd=$${l.maxBudgetUsd}(CLI 名义成本,接中转站时与实际计费无关)`;
+  return `maxTurns=${l.maxTurns} ${budget} 步骤超时=${l.timeoutMs}ms`;
 }
 
 /**
@@ -460,9 +499,11 @@ export async function getCodingAgent(
         // guard.ts 内部会与默认值取并集,传参只增不减。
         PreToolUse: [{ hooks: [makeGuardHook(repoRoot, resolveProtectedBranchNames(target), runId)] }],
       },
-      // 无人值守的成本与失控上限(可被 env 覆盖) —— 与启动自检、编码步超时读的是**同一处**
+      // 无人值守的成本与失控上限(可被 env 覆盖) —— 与启动自检、编码步超时读的是**同一处**。
+      // `maxBudgetUsd` 为 `null`（显式关闭）时**不下发该字段**：它在 SDK 里是可选的，
+      // 省略即无上限。传 `0` 是另一回事（真会当成 0 预算），所以这里必须显式转 undefined。
       maxTurns: limits.maxTurns,
-      maxBudgetUsd: limits.maxBudgetUsd,
+      maxBudgetUsd: limits.maxBudgetUsd ?? undefined,
     },
   });
 }
