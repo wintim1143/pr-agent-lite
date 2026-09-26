@@ -33,7 +33,18 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { logStartupSelfCheck } from './startup.js';
 import { repoList, runCost, runStatus } from './tools/readonly.js';
-import { parseRepoTarget } from './adapters/repo-registry.js';
+import { resolveRepoTarget } from './adapters/repo-registry.js';
+import { progressLogPath } from './progress.js';
+
+/**
+ * `dev_start` 拉起子进程后的**存活探测窗口**（毫秒）。
+ *
+ * 子进程若在这个窗口内就退出，必须**当场**返回 `isError` —— 否则调用方拿到的是
+ * 「已开始」，而实际上什么都没有发生（详见 dev_start 里的 3b 段）。
+ * 窗口取 400ms：足够覆盖「参数非法 / 注册表读不出 / 入口缺失」这类启动即死，
+ * 又远小于一次真实编码（分钟级）与外侧网关的一句话延迟（二十秒级）。
+ */
+const DEV_RUNNER_LIVENESS_MS = 400;
 
 /** 把任意结果包成 MCP 工具返回值：结构化数据给机器，可读文本给人。 */
 function asToolResult(structured: Record<string, unknown>, humanText: string) {
@@ -206,13 +217,22 @@ export function buildServer(): McpServer {
     async ({ target, title, body, issueNumber, baseBranch, allowRemote }) => {
       // 1) 入参校验在**本进程**做：不合法的入参应当立刻回给调用方，
       //    而不是起一个注定失败的进程、让人去日志里找原因。
+      //
+      // ⚠️ 用 `resolveRepoTarget` 而不是 `parseRepoTarget`（2026-09-26 实测补）：
+      //    后者的默认参数会在调用方**没给** baseBranch 时填上 `main`，把「没指定」
+      //    与「指定了 main」压成同一个值 —— 于是注册表声明 `master` 之类时，
+      //    必然在子进程里撞上「baseBranch 配置矛盾」。**而那条冲突发生在被
+      //    detached 拉起的子进程里**：调用方拿到的是一句「已开始」，状态页与
+      //    `run_status` 里却一条记录都没有。假成功比直接报错贵得多。
       let parsedTarget;
       try {
-        parsedTarget = parseRepoTarget(target, baseBranch);
+        parsedTarget = resolveRepoTarget(target, baseBranch);
       } catch (e) {
-        const msg = `target 格式非法（期望 owner/repo）：${e instanceof Error ? e.message : String(e)}`;
+        const msg = `target 无法解析（期望 owner/repo，且仓库注册表可读）：${e instanceof Error ? e.message : String(e)}`;
         return { content: [{ type: 'text' as const, text: msg }], isError: true };
       }
+      /** 基线是调用方显式给的，还是由注册表决定的 —— 只有前者才下发 `--base-branch`。 */
+      const baseBranchFromCaller = Boolean(baseBranch?.trim());
 
       // 2) 触发体必须存在。缺它时若只回一个 runId，调用方会以为「已经开始了」——
       //    而实际上什么都没发生，且日志里也不会有任何记录（进程都没起来）。
@@ -231,7 +251,9 @@ export function buildServer(): McpServer {
         `--run-id=${runId}`,
         `--target=${parsedTarget.owner}/${parsedTarget.repo}`,
         `--title=${title}`,
-        `--base-branch=${parsedTarget.baseBranch}`,
+        // 只在调用方**显式**给了基线时才下发；否则让子进程按注册表决定
+        // （它自己会 `resolveRepoTarget`）。下发一个默认值等于替注册表做了决定。
+        ...(baseBranchFromCaller ? [`--base-branch=${baseBranch}`] : []),
         ...(body ? [`--body=${body}`] : []),
         ...(issueNumber !== undefined ? [`--issue-number=${issueNumber}`] : []),
         ...(allowRemote ? ['--allow-remote'] : []),
@@ -247,6 +269,50 @@ export function buildServer(): McpServer {
       });
       child.unref();
 
+      // 3b) **存活探测**（2026-09-26 实测补）：子进程若在百毫秒级就退出，
+      //     说明这次 run 根本没跑起来（参数非法、注册表读不出、入口缺失…）。
+      //     原先直接回「已开始」，调用方只能通过「过一会儿问 run_status 查不到」
+      //     来间接发现 —— 而那时人已经在等一次根本不存在的编码。
+      //     ⚠️ 这一步给「必须立即返回」加了有界的几百毫秒；相对一次分钟级编码
+      //     与外侧网关二十秒级的一句话延迟，这个代价换的是**失败当场可见**。
+      const earlyExit = await new Promise<number | null>(resolve => {
+        const timer = setTimeout(() => {
+          child.off('exit', onExit);
+          resolve(null);
+        }, DEV_RUNNER_LIVENESS_MS);
+        function onExit(code: number | null): void {
+          clearTimeout(timer);
+          resolve(code ?? -1);
+        }
+        child.once('exit', onExit);
+      });
+      if (earlyExit !== null) {
+        const structured = {
+          started: false,
+          runId,
+          pid: child.pid ?? null,
+          exitCode: earlyExit,
+          target: `${parsedTarget.owner}/${parsedTarget.repo}`,
+          logFile: progressLogPath(),
+          notes: [
+            `子进程在 ${DEV_RUNNER_LIVENESS_MS}ms 内就退出了（exit=${earlyExit}）—— **这次 run 没有跑起来**。`,
+            `原因写在日志里（日志是唯一真相源）：${progressLogPath()}`,
+          ],
+        };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text:
+                `启动失败：runId=${runId} 的子进程在 ${DEV_RUNNER_LIVENESS_MS}ms 内退出（exit=${earlyExit}）。\n` +
+                `这次 run **没有跑起来**，不要当作「正在跑」——原因见日志 ${progressLogPath()}。`,
+            },
+          ],
+          structuredContent: structured,
+          isError: true,
+        };
+      }
+
       const host = process.env.STATUS_HOST?.trim() || '127.0.0.1';
       const port = Number(process.env.STATUS_PORT ?? 8787);
       const structured = {
@@ -255,6 +321,7 @@ export function buildServer(): McpServer {
         pid: child.pid ?? null,
         target: `${parsedTarget.owner}/${parsedTarget.repo}`,
         baseBranch: parsedTarget.baseBranch,
+        baseBranchSource: baseBranchFromCaller ? 'caller' : 'registry',
         issueNumber: issueNumber ?? null,
         // 编号由子进程生成（按启动时刻）；调用方想知道确切值时以 run_status 为准
         issueNumberDerivedByRunner: issueNumber === undefined,
@@ -262,6 +329,9 @@ export function buildServer(): McpServer {
         statusUrl: `http://${host}:${port}/`,
         notes: [
           '本次调用**已经返回**，编码仍在独立进程里进行 —— 用 run_status(runId) 或状态页看进度。',
+          baseBranchFromCaller
+            ? `基线由调用方指定：${parsedTarget.baseBranch}`
+            : `基线由仓库注册表决定：${parsedTarget.baseBranch}`,
           allowRemote
             ? '已允许接触远端（会 push 并尝试开 PR）。'
             : '默认不接触远端：跑完 commit 即止，不 push、不开 PR。',

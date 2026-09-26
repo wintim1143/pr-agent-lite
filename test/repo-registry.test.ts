@@ -24,6 +24,7 @@ import {
   assertLogicalTarget,
   loadRegistry,
   resolveRepoEntry,
+  resolveRepoTarget,
   listRepoKeys,
   registrySummary,
   registryFilePath,
@@ -229,6 +230,50 @@ describe('两个 target 各自解析出各自的 root / 配置（AC-4 的解析�
     expect(() => resolveRepoEntry({ owner: 'local', repo: 'repo-b', baseBranch: 'main' })).toThrow(
       /baseBranch 配置矛盾[\s\S]*不静默取其一/
     );
+  });
+});
+
+describe('resolveRepoTarget —— 「没指定基线」由注册表回答', () => {
+  // 这一组的由来：2026-09-26 服务器首次真跑，`dev_start` 回了「已开始」，
+  // 状态页与 run_status 里却一条记录都没有 —— parseRepoTarget 的默认参数把
+  // 「调用方没说」压成了「调用方要 main」，与注册表声明的 trunk/master 冲突，
+  // 而冲突发生在被 detached 拉起的子进程里。**假成功比直接报错贵得多。**
+  beforeEach(() => {
+    writeRegistry({ 'local/repo-b': { localPath: rootB, baseBranch: 'trunk' } });
+  });
+
+  it('调用方没给基线 → 取注册表声明的那个，而不是默认的 main', () => {
+    expect(resolveRepoTarget('local/repo-b')).toEqual({
+      owner: 'local',
+      repo: 'repo-b',
+      baseBranch: 'trunk',
+    });
+  });
+
+  it('解析结果可直接过 resolveRepoEntry —— 不再撞「两处配置矛盾」（回归判据）', () => {
+    expect(() => resolveRepoEntry(resolveRepoTarget('local/repo-b'))).not.toThrow();
+  });
+
+  it('调用方显式给的基线优先；注册表若与它不同，仍照旧报错（安全规则不动）', () => {
+    const t = resolveRepoTarget('local/repo-b', 'release');
+    expect(t.baseBranch).toBe('release');
+    expect(() => resolveRepoEntry(t)).toThrow(/baseBranch 配置矛盾/);
+  });
+
+  it('注册表存在但未声明 baseBranch → 退回默认基线', () => {
+    writeRegistry({ 'local/repo-b': { localPath: rootB } });
+    expect(resolveRepoTarget('local/repo-b').baseBranch).toBe('main');
+  });
+
+  it('key 不在表里 → 解析层不吞掉，交给 resolveRepoEntry 报「未知 repoKey」', () => {
+    const t = resolveRepoTarget('ghost/repo');
+    expect(t.baseBranch).toBe('main');
+    expect(() => resolveRepoEntry(t)).toThrow(/未知 repoKey/);
+  });
+
+  it('注册表文件缺失 → 显式抛错（不降级为空表）', () => {
+    fs.rmSync(registryFilePath(), { force: true });
+    expect(() => resolveRepoTarget('local/repo-b')).toThrow(/注册表不存在/);
   });
 });
 

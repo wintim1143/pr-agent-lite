@@ -74,6 +74,41 @@ export function isRepoTarget(v: unknown): v is RepoTarget {
 }
 
 /**
+ * 解析 repoKey，**调用方未显式给出基线时以注册表为准**（2026-09-26 实测补）。
+ *
+ * ## 为什么必须有这个函数，而不是直接用 `parseRepoTarget`
+ *
+ * `parseRepoTarget` 的默认参数把两种情况压成了同一个值：
+ * 「调用方**没说要哪个**基线」与「调用方**明确要 `main`**」 —— 两者都得到 `main`。
+ * 而注册表是允许声明 `baseBranch` 的，于是一旦注册表写的是 `master` 之类，
+ * 就会撞上 `resolveRepoEntry` 的「两处配置矛盾」告警（那条规则本身是对的，不能松）。
+ *
+ * 实测症状（服务器首次真跑）：`dev_start` 返回「已开始」，状态页与 `run_status`
+ * 里却**一条记录都没有** —— 因为冲突发生在**被 detached 拉起的子进程**里，
+ * 调用方拿到的只是一句「已开始」。**假成功比直接报错贵得多。**
+ *
+ * ## 优先级
+ *
+ * **显式入参 > 注册表 `entry.baseBranch` > `DEFAULT_BASE_BRANCH`**
+ *
+ * ⚠️ 显式入参仍然优先，且注册表若与它不同，`resolveRepoEntry` 照旧报错 ——
+ * 本条只解决「没指定」的归属，不动「指定了就不许含糊」这条安全规则。
+ *
+ * @throws 注册表缺失 / JSON 非法 / 结构不符（`loadRegistry` 一律抛错，不降级为空表）
+ */
+export function resolveRepoTarget(key: string, explicitBaseBranch?: string): RepoTarget {
+  const bare = parseRepoTarget(key);
+  const explicit = explicitBaseBranch?.trim();
+  if (explicit) return { ...bare, baseBranch: explicit };
+
+  const entry = loadRegistry()[repoKeyOf(bare)];
+  const fromRegistry = entry?.baseBranch?.trim();
+  // 注册表存在但没声明 baseBranch、或 key 根本不在表里 → 退回默认基线；
+  // 「key 不在表里」由 `resolveRepoEntry` 显式报错（未知 repoKey），不在这里吞掉。
+  return { ...bare, baseBranch: fromRegistry || DEFAULT_BASE_BRANCH };
+}
+
+/**
  * 判定一个字符串是否像**本机路径**（而不是逻辑标识）。
  *
  * 用于两条防线：

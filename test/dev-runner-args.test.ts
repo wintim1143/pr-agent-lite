@@ -69,9 +69,23 @@ describe('dev-runner 入参解析', () => {
     expect(a.startsWith('run-')).toBe(true);
   });
 
-  it('base-branch 可覆盖，缺省时为注册表默认值（main）', () => {
-    expect(ok(['--target=o/r', '--title=x']).target.baseBranch).toBe('main');
-    expect(ok(['--target=o/r', '--title=x', '--base-branch=develop']).target.baseBranch).toBe('develop');
+  it('未显式指定基线时**不得**被当成「指定了 main」—— 由 baseBranchExplicit 标记，交给注册表', () => {
+    // parseArgs 是纯函数，这里只钉住「调用方有没有显式给」这个事实。
+    // 「没给时以注册表为准」发生在 dev-runner 的 main() 里（用 resolveRepoTarget），
+    // 单测见 repo-registry.test.ts 的 resolveRepoTarget 一组。
+    const omitted = ok(['--target=o/r', '--title=x']);
+    expect(omitted.target.baseBranch).toBe('main'); // 纯解析层的兜底值
+    expect(omitted.baseBranchExplicit).toBe(false); // ← 关键：这不等于「显式要 main」
+
+    const explicit = ok(['--target=o/r', '--title=x', '--base-branch=develop']);
+    expect(explicit.target.baseBranch).toBe('develop');
+    expect(explicit.baseBranchExplicit).toBe(true);
+
+    // 「显式写 main」与「没写」必须可区分 —— 这正是 2026-09-26 服务器首次真跑的根因：
+    // 两者压成同一个值后，注册表里声明的 master 永远用不上，冲突只在子进程里爆发。
+    const explicitMain = ok(['--target=o/r', '--title=x', '--base-branch=main']);
+    expect(explicitMain.baseBranchExplicit).toBe(true);
+    expect(explicitMain.target.baseBranch).toBe('main');
   });
 
   it('--body 缺省为空串（而不是 undefined —— 下游 schema 要 string）', () => {
