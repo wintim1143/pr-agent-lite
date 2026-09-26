@@ -94,7 +94,7 @@
 | 项 | 值 |
 |---|---|
 | **本仓库** | git 仓库，branch `main` |
-| **入口** | `npm start` = 启动自检（打印配置期事实后退出）· `npm run mcp` = MCP server（stdio）· `npm run status` = SSE 状态页。⚠️ **stdio 模式下 stdout 是协议通道**，人类可读行必须走 stderr |
+| **入口** | `npm start` = 启动自检（打印配置期事实后退出）· `npm run mcp` = MCP server（stdio）· `npm run status` = SSE 状态页。⚠️ **stdio 模式下 stdout 是协议通道**，人类可读行必须走 stderr<br>**外侧网关注册请用 `scripts/mcp-launch.sh`** —— 它先把 cwd 钉死在仓库根再起 stdio。注册接口（如 `hermes mcp add`）只有 `--command` / `--args` / `--env`、**没有 cwd 参数**，而 `.env` 是按 cwd 加载的 ⇒ 直接注册会**静默读到空配置**（进程起得来、握手也成功，但两个端点都没配） |
 | **参考代码副本** | `reference/`，随仓库提供，可直接读。**只读，不就地开发**。文档里的代码锚点 = 文件名 + 行号，对应副本中的同名文件（逐行对齐） |
 | **部署目标** | 一台远程服务器，与 Hermes 同机。**连接方式由本地配置提供，不进仓库** |
 | **开发机** | 未安装 Hermes；靶子仓库与服务器环境都不在本地 |
